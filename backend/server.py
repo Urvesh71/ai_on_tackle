@@ -248,11 +248,15 @@ async def reload_commands_endpoint():
 @api_router.get("/rag/stats")
 async def get_rag_stats():
     """Get RAG system statistics"""
+    ollama_host = os.environ.get('OLLAMA_HOST', 'http://localhost:11434')
     return {
         "total_commands": get_command_count(),
         "embedding_model": "all-MiniLM-L6-v2",
         "vector_store": "ChromaDB (in-memory)",
-        "retrieval_top_k": 15
+        "retrieval_top_k": 15,
+        "llm_provider": "Ollama",
+        "llm_model": "llama3.1:8b",
+        "ollama_host": ollama_host
     }
 
 
