@@ -1,34 +1,72 @@
-.App-logo {
-    height: 40vmin;
-    pointer-events: none;
+/* Background texture overlay */
+.bg-texture {
+    background-image: url('https://images.unsplash.com/photo-1737505598998-693328b57ae3?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NTYxNzV8MHwxfHNlYXJjaHwxfHxhYnN0cmFjdCUyMGRhcmslMjBnZW9tZXRyaWMlMjB0ZWNobm9sb2d5JTIwYmFja2dyb3VuZCUyMG1pbmltYWx8ZW58MHx8fHwxNzY5OTUyNDQ3fDA&ixlib=rb-4.1.0&q=85');
+    background-size: cover;
+    background-position: center;
+    background-repeat: no-repeat;
 }
 
-@media (prefers-reduced-motion: no-preference) {
-    .App-logo {
-        animation: App-logo-spin infinite 20s linear;
-    }
+/* Grid pattern overlay */
+.grid-pattern {
+    background-image: 
+        linear-gradient(to right, rgba(128, 128, 128, 0.07) 1px, transparent 1px),
+        linear-gradient(to bottom, rgba(128, 128, 128, 0.07) 1px, transparent 1px);
+    background-size: 24px 24px;
 }
 
-.App-header {
-    background-color: #0f0f10;
-    min-height: 100vh;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    font-size: calc(10px + 2vmin);
-    color: white;
-}
-
-.App-link {
-    color: #61dafb;
-}
-
-@keyframes App-logo-spin {
+/* Chat message animations */
+@keyframes slideInFromBottom {
     from {
-        transform: rotate(0deg);
+        opacity: 0;
+        transform: translateY(10px);
     }
     to {
-        transform: rotate(360deg);
+        opacity: 1;
+        transform: translateY(0);
     }
+}
+
+.message-animate {
+    animation: slideInFromBottom 0.3s ease-out forwards;
+}
+
+/* Formula pulse animation */
+@keyframes formulaPulse {
+    0%, 100% {
+        opacity: 1;
+    }
+    50% {
+        opacity: 0.8;
+    }
+}
+
+.formula-pulse {
+    animation: formulaPulse 2s ease-in-out infinite;
+}
+
+/* Input focus glow */
+.input-glow:focus-within {
+    box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.3), 0 0 20px rgba(59, 130, 246, 0.15);
+}
+
+/* Typing indicator */
+@keyframes typingBounce {
+    0%, 60%, 100% {
+        transform: translateY(0);
+    }
+    30% {
+        transform: translateY(-4px);
+    }
+}
+
+.typing-dot {
+    animation: typingBounce 1.4s infinite;
+}
+
+.typing-dot:nth-child(2) {
+    animation-delay: 0.2s;
+}
+
+.typing-dot:nth-child(3) {
+    animation-delay: 0.4s;
 }
