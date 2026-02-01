@@ -267,8 +267,19 @@ async def chat(request: ChatRequest):
         user_message = UserMessage(text=request.message)
         
         # Get response from Claude
-        formula = await chat.send_message(user_message)
-        formula = formula.strip()
+        response_text = await chat.send_message(user_message)
+        response_text = response_text.strip()
+        
+        # Parse the JSON response
+        import json
+        try:
+            parsed = json.loads(response_text)
+            user_text = parsed.get("user_text", "UNKNOWN_COMMAND")
+            technical = parsed.get("technical", "UNKNOWN_COMMAND")
+        except json.JSONDecodeError:
+            # Fallback if not valid JSON
+            user_text = response_text
+            technical = response_text
         
         # Store user message
         user_msg = ChatMessage(
@@ -284,15 +295,16 @@ async def chat(request: ChatRequest):
         assistant_msg = ChatMessage(
             session_id=session_id,
             role="assistant",
-            content=formula,
-            formula=formula
+            content=f"{user_text}|{technical}",
+            formula=user_text
         )
         assistant_doc = assistant_msg.model_dump()
         assistant_doc['timestamp'] = assistant_doc['timestamp'].isoformat()
         await db.chat_messages.insert_one(assistant_doc)
         
         return ChatResponse(
-            formula=formula,
+            user_text=user_text,
+            technical=technical,
             session_id=session_id,
             message_id=assistant_msg.id
         )
