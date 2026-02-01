@@ -48,12 +48,12 @@ const ChatPage = () => {
         session_id: sessionId,
       });
 
-      // Add assistant response
       const assistantMessage = {
         id: response.data.message_id,
         role: "assistant",
-        content: response.data.formula,
-        formula: response.data.formula,
+        content: response.data.user_text,
+        user_text: response.data.user_text,
+        technical: response.data.technical,
         timestamp: new Date().toISOString(),
       };
       setMessages((prev) => [...prev, assistantMessage]);
@@ -158,8 +158,12 @@ const ChatPage = () => {
                 <div key={msg.id} className="message-animate">
                   {msg.role === "user" ? (
                     <ChatMessage message={msg} />
-                  ) : msg.formula ? (
-                    <FormulaCard formula={msg.formula} isError={msg.isError} />
+                  ) : msg.user_text ? (
+                    <FormulaCard 
+                      userText={msg.user_text} 
+                      technical={msg.technical} 
+                      isError={msg.isError} 
+                    />
                   ) : (
                     <ChatMessage message={msg} />
                   )}
