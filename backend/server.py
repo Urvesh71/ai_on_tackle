@@ -141,10 +141,9 @@ async def chat(request: ChatRequest):
     """Process user message using RAG to retrieve relevant commands"""
     try:
         session_id = request.session_id or str(uuid.uuid4())
-        api_key = os.environ.get('EMERGENT_LLM_KEY')
         
-        if not api_key:
-            raise HTTPException(status_code=500, detail="LLM API key not configured")
+        # Get Ollama host from env or use default
+        ollama_host = os.environ.get('OLLAMA_HOST', 'http://localhost:11434')
         
         # RAG Step 1: Retrieve relevant commands using semantic search
         logger.info(f"Retrieving relevant commands for: {request.message}")
@@ -154,19 +153,18 @@ async def chat(request: ChatRequest):
         # RAG Step 2: Build prompt with only relevant commands
         system_prompt = build_rag_prompt(relevant_commands)
         
-        # RAG Step 3: Generate response using LLM with augmented context
-        chat_instance = LlmChat(
-            api_key=api_key,
-            session_id=f"command-{session_id}",
-            system_message=system_prompt
-        ).with_model("anthropic", "claude-sonnet-4-5-20250929")
+        # RAG Step 3: Generate response using Ollama with llama3.1:8b
+        client = ollama.Client(host=ollama_host)
         
-        # Create user message
-        user_message = UserMessage(text=request.message)
+        response = client.chat(
+            model='llama3.1:8b',
+            messages=[
+                {'role': 'system', 'content': system_prompt},
+                {'role': 'user', 'content': request.message}
+            ]
+        )
         
-        # Get response from Claude
-        response_text = await chat_instance.send_message(user_message)
-        response_text = response_text.strip()
+        response_text = response['message']['content'].strip()
         
         # Remove markdown code blocks if present
         if response_text.startswith("```"):
