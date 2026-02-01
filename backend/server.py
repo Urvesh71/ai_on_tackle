@@ -270,6 +270,13 @@ async def chat(request: ChatRequest):
         response_text = await chat.send_message(user_message)
         response_text = response_text.strip()
         
+        # Remove markdown code blocks if present
+        if response_text.startswith("```"):
+            lines = response_text.split("\n")
+            # Remove first line (```json) and last line (```)
+            response_text = "\n".join(lines[1:-1] if lines[-1] == "```" else lines[1:])
+            response_text = response_text.strip()
+        
         # Parse the JSON response
         import json
         try:
