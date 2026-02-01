@@ -1,0 +1,127 @@
+{
+  "identity": {
+    "persona": "E1 - The Anti-AI Designer",
+    "archetype": "The Performance Pro (Elite Athleticism & Precision)",
+    "principles": [
+      "Fusion over Imitation: Mix technical CLI aesthetics with modern chat UI.",
+      "Emotion First: The user should feel like a 'Power User' or 'Hacker'.",
+      "Content is King: The 'Formula' is the hero. Highlight it.",
+      "Negative Space: Don't clutter. Let the chat breathe.",
+      "Contrast: High contrast for readability in dark mode."
+    ]
+  },
+  "typography": {
+    "fonts": {
+      "headings": {
+        "family": "JetBrains Mono, monospace",
+        "weight": "700",
+        "usage": "Main titles, Formula outputs, Command names"
+      },
+      "body": {
+        "family": "Inter, sans-serif",
+        "weight": "400",
+        "usage": "Chat messages, UI labels, descriptions"
+      }
+    },
+    "rules": [
+      "Use 'tracking-tight' for large headings.",
+      "Use 'tracking-wide' for small uppercase labels.",
+      "Line height 'leading-relaxed' for chat messages."
+    ]
+  },
+  "colors": {
+    "theme": "dark",
+    "palette": {
+      "background": {
+        "primary": "#09090b", 
+        "secondary": "#18181b",
+        "tertiary": "#27272a"
+      },
+      "text": {
+        "primary": "#fafafa",
+        "secondary": "#a1a1aa",
+        "muted": "#52525b"
+      },
+      "accent": {
+        "primary": "#3b82f6", 
+        "secondary": "#60a5fa",
+        "glow": "rgba(59, 130, 246, 0.5)"
+      },
+      "status": {
+        "success": "#10b981",
+        "error": "#ef4444",
+        "warning": "#f59e0b"
+      }
+    },
+    "gradients": {
+      "subtle_glow": "radial-gradient(circle at center, var(--accent-glow) 0%, transparent 70%)"
+    }
+  },
+  "layout": {
+    "spacing": {
+      "container_padding": "p-4 md:p-8 lg:p-12",
+      "element_gap": "gap-4 md:gap-6",
+      "section_gap": "gap-12 md:gap-24"
+    },
+    "grid": {
+      "type": "Bento Grid (Mode B)",
+      "columns": "grid-cols-1 md:grid-cols-12",
+      "gap": "gap-4"
+    },
+    "containers": {
+      "chat_wrapper": "max-w-4xl mx-auto w-full h-[80vh] flex flex-col",
+      "input_area": "fixed bottom-8 left-1/2 -translate-x-1/2 w-full max-w-3xl px-4"
+    }
+  },
+  "components": {
+    "chat_bubble": {
+      "user": "bg-primary text-primary-foreground rounded-2xl rounded-tr-sm px-6 py-4 max-w-[80%]",
+      "ai": "bg-secondary text-secondary-foreground rounded-2xl rounded-tl-sm px-6 py-4 max-w-[80%] border border-border/50"
+    },
+    "formula_display": {
+      "style": "font-mono bg-black/50 border border-accent/20 rounded-lg p-4 text-accent-secondary shadow-[0_0_15px_rgba(59,130,246,0.1)]",
+      "animation": "animate-in fade-in slide-in-from-bottom-2 duration-300"
+    },
+    "input_field": {
+      "style": "bg-background/80 backdrop-blur-xl border border-white/10 focus:border-accent/50 rounded-full px-6 py-4 shadow-2xl transition-all duration-300",
+      "placeholder": "text-muted-foreground"
+    }
+  },
+  "visual_enhancers": {
+    "background_texture": {
+      "type": "image_overlay",
+      "url": "https://images.unsplash.com/photo-1737505598998-693328b57ae3?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NTYxNzV8MHwxfHNlYXJjaHwxfHxhYnN0cmFjdCUyMGRhcmslMjBnZW9tZXRyaWMlMjB0ZWNobm9sb2d5JTIwYmFja2dyb3VuZCUyMG1pbmltYWx8ZW58MHx8fHwxNzY5OTUyNDQ3fDA&ixlib=rb-4.1.0&q=85",
+      "opacity": "opacity-5",
+      "blend_mode": "mix-blend-overlay"
+    },
+    "grid_pattern": "bg-[linear-gradient(to_right,#80808012_1px,transparent_1px),linear-gradient(to_bottom,#80808012_1px,transparent_1px)] bg-[size:24px_24px]",
+    "glassmorphism": "backdrop-blur-md bg-black/30 border border-white/10"
+  },
+  "assets": {
+    "images": [
+      {
+        "category": "background",
+        "url": "https://images.unsplash.com/photo-1737505598998-693328b57ae3?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NTYxNzV8MHwxfHNlYXJjaHwxfHxhYnN0cmFjdCUyMGRhcmslMjBnZW9tZXRyaWMlMjB0ZWNobm9sb2d5JTIwYmFja2dyb3VuZCUyMG1pbmltYWx8ZW58MHx8fHwxNzY5OTUyNDQ3fDA&ixlib=rb-4.1.0&q=85",
+        "description": "Abstract dark geometric background for subtle texture"
+      }
+    ],
+    "icons": "Use 'lucide-react' for all UI icons (Send, Copy, Terminal, Settings)."
+  },
+  "instructions_to_main_agent": [
+    "1. SETUP: Ensure 'lucide-react' and 'clsx' 'tailwind-merge' are installed.",
+    "2. THEME: Force dark mode in 'tailwind.config.js' or 'index.css'. The app should ALWAYS be dark.",
+    "3. LAYOUT: Create a 'ChatLayout' component that centers the content and applies the background texture.",
+    "4. COMPONENTS: Build 'ChatMessage', 'ChatInput', and 'FormulaCard' components separately.",
+    "5. TYPOGRAPHY: Import 'JetBrains Mono' from Google Fonts for the formula display.",
+    "6. INTERACTION: Add hover states to the copy button on the formula card. Add a 'glow' effect to the input field when focused.",
+    "7. DATA-TESTID: Add 'data-testid' to the input field ('chat-input'), send button ('send-button'), and formula output ('formula-output')."
+  ],
+  "UNIVERSAL_GUIDELINES_FOR_MAIN_AGENT": [
+    "Avoid 'AI slop' aesthetics (generic gradients, centered everything).",
+    "Use 2-3x more spacing than typical.",
+    "Every interaction needs micro-animations.",
+    "Use 'sonner' for toasts.",
+    "Do NOT use 'transition: all'.",
+    "Do NOT center align the app container globally."
+  ]
+}
