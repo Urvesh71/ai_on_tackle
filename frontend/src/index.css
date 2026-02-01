@@ -38,9 +38,6 @@
     * {
         @apply border-border;
     }
-    html {
-        @apply dark;
-    }
     body {
         @apply bg-background text-foreground antialiased;
         font-family: 'Inter', sans-serif;
@@ -65,7 +62,8 @@
     }
     
     .glass {
-        @apply backdrop-blur-xl bg-black/30 border border-white/10;
+        @apply backdrop-blur-xl border border-white/10;
+        background: rgba(0, 0, 0, 0.3);
     }
     
     .formula-glow {
