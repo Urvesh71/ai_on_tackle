@@ -158,29 +158,40 @@ COMMAND_MAPPING = {
 }
 
 # System prompt for the LLM
-SYSTEM_PROMPT = """You are a command interpreter for a spreadsheet-like application. Your job is to analyze user requests and map them to a hierarchical formula structure.
+SYSTEM_PROMPT = """You are a command interpreter for a spreadsheet-like application. Your job is to analyze user requests and map them to commands, returning both the user-friendly command names and their technical function names.
 
-AVAILABLE COMMANDS:
+AVAILABLE COMMANDS (Format: "Command Name" -> technicalFunctionName):
 """ + "\n".join([f'- "{key}" -> {value}' for key, value in COMMAND_MAPPING.items()]) + """
 
 RULES:
 1. Identify distinct actions from the user's request
-2. Map each action to its corresponding command name (the key, not the technical function)
-3. Return ONLY the formula in the format: Command1.Command2.Command3
-4. If a command requires parameters (like cell ranges), append them in parentheses: CommandName(parameter)
-5. Commands are executed in order they appear in your response
+2. Map each action to BOTH:
+   - The command name (human-readable key)
+   - The technical function name (the value)
+3. Return your response in this EXACT JSON format:
+   {"user_text": "Command1.Command2.Command3", "technical": "function1.function2.function3"}
+4. If a command requires parameters (like cell ranges), append them in parentheses to BOTH: CommandName(param) and functionName(param)
+5. Commands are executed in order they appear
 6. Use the dot (.) as delimiter between commands
-7. Return ONLY the formula string, nothing else. No explanations, no additional text.
+7. Return ONLY the JSON object, nothing else. No explanations, no additional text.
 
 EXAMPLES:
-- User: "go to grids, create table, apply borders" -> Grids.Table.Borders
-- User: "go to blue zone, open grids, add corner dialog for Sheet1$E$10:$G$20" -> Pink Zone.Grids.Open Add Corner Dialog(Sheet1$E$10:$G$20)
-- User: "show grids" -> Grids
-- User: "copy and paste" -> Copy.Paste
-- User: "add a new row and make it bold" -> Add Row.Bold
-- User: "align text to the left and center vertically" -> Left.Middle
+- User: "go to grids, create table, apply borders"
+  Response: {"user_text": "Grids.Table.Borders", "technical": "showGridsTab.openTable.borders"}
 
-If the user's request doesn't match any command, respond with "UNKNOWN_COMMAND"."""
+- User: "delete row, hide column, sort data"
+  Response: {"user_text": "Delete Row.Hide Column.Sort A Z", "technical": "deleteRow.updateVisibilityHideColumn.sortAsc"}
+
+- User: "copy and paste"
+  Response: {"user_text": "Copy.Paste", "technical": "copy.paste"}
+
+- User: "show grids"
+  Response: {"user_text": "Grids", "technical": "showGridsTab"}
+
+- User: "go to blue zone, open grids, add corner dialog for Sheet1$E$10:$G$20"
+  Response: {"user_text": "Pink Zone.Grids.Open Add Corner Dialog(Sheet1$E$10:$G$20)", "technical": "blueZone.showGridsTab.showAddCornerDialog(Sheet1$E$10:$G$20)"}
+
+If the user's request doesn't match any command, respond with: {"user_text": "UNKNOWN_COMMAND", "technical": "UNKNOWN_COMMAND"}"""
 
 
 # Define Models
@@ -207,7 +218,8 @@ class ChatRequest(BaseModel):
     session_id: Optional[str] = None
 
 class ChatResponse(BaseModel):
-    formula: str
+    user_text: str
+    technical: str
     session_id: str
     message_id: str
 
