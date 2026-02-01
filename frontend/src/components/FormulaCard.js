@@ -1,19 +1,31 @@
 import { useState } from "react";
-import { Copy, Check, Terminal, AlertCircle } from "lucide-react";
+import { Copy, Check, Terminal, AlertCircle, Code } from "lucide-react";
 import { Button } from "./ui/button";
 import { toast } from "sonner";
 
-const FormulaCard = ({ formula, isError }) => {
-  const [copied, setCopied] = useState(false);
+const FormulaCard = ({ userText, technical, isError }) => {
+  const [copiedUser, setCopiedUser] = useState(false);
+  const [copiedTech, setCopiedTech] = useState(false);
 
-  const handleCopy = async () => {
+  const handleCopyUser = async () => {
     try {
-      await navigator.clipboard.writeText(formula);
-      setCopied(true);
-      toast.success("Formula copied to clipboard");
-      setTimeout(() => setCopied(false), 2000);
+      await navigator.clipboard.writeText(userText);
+      setCopiedUser(true);
+      toast.success("User text copied to clipboard");
+      setTimeout(() => setCopiedUser(false), 2000);
     } catch (err) {
-      toast.error("Failed to copy formula");
+      toast.error("Failed to copy");
+    }
+  };
+
+  const handleCopyTech = async () => {
+    try {
+      await navigator.clipboard.writeText(technical);
+      setCopiedTech(true);
+      toast.success("Technical functions copied to clipboard");
+      setTimeout(() => setCopiedTech(false), 2000);
+    } catch (err) {
+      toast.error("Failed to copy");
     }
   };
 
@@ -27,7 +39,7 @@ const FormulaCard = ({ formula, isError }) => {
           <AlertCircle className="w-4 h-4 text-red-400" />
         </div>
         <div className="px-5 py-4 bg-red-500/10 border border-red-500/20 rounded-2xl rounded-tl-sm">
-          <p className="text-sm text-red-400">{formula}</p>
+          <p className="text-sm text-red-400">{userText}</p>
         </div>
       </div>
     );
@@ -43,22 +55,26 @@ const FormulaCard = ({ formula, isError }) => {
         <Terminal className="w-4 h-4 text-blue-400" />
       </div>
 
-      {/* Formula card */}
-      <div className="flex-1 max-w-[85%]">
+      {/* Formula cards container */}
+      <div className="flex-1 max-w-[85%] space-y-4">
+        {/* User Text Formula */}
         <div className="relative group bg-black/60 border border-blue-500/20 rounded-xl overflow-hidden formula-glow">
           {/* Header */}
           <div className="flex items-center justify-between px-4 py-2 bg-blue-500/5 border-b border-blue-500/10">
-            <span className="text-xs font-medium text-blue-400/80 uppercase tracking-wider">
-              Generated Formula
-            </span>
+            <div className="flex items-center gap-2">
+              <Terminal className="w-3.5 h-3.5 text-blue-400/80" />
+              <span className="text-xs font-medium text-blue-400/80 uppercase tracking-wider">
+                User Text
+              </span>
+            </div>
             <Button
-              data-testid="copy-formula-button"
+              data-testid="copy-user-text-button"
               variant="ghost"
               size="icon"
-              onClick={handleCopy}
+              onClick={handleCopyUser}
               className="w-7 h-7 opacity-0 group-hover:opacity-100 transition-opacity duration-200 hover:bg-blue-500/10"
             >
-              {copied ? (
+              {copiedUser ? (
                 <Check className="w-3.5 h-3.5 text-green-400" />
               ) : (
                 <Copy className="w-3.5 h-3.5 text-blue-400" />
@@ -66,13 +82,13 @@ const FormulaCard = ({ formula, isError }) => {
             </Button>
           </div>
 
-          {/* Formula content */}
+          {/* User text content */}
           <div className="px-5 py-4">
             <code
-              data-testid="formula-text"
+              data-testid="user-text-formula"
               className="font-mono text-lg text-blue-300 tracking-wide break-all"
             >
-              {formula}
+              {userText}
             </code>
           </div>
 
@@ -80,20 +96,68 @@ const FormulaCard = ({ formula, isError }) => {
           <div className="absolute bottom-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-blue-500/30 to-transparent" />
         </div>
 
-        {/* Formula breakdown */}
-        {formula && formula.includes(".") && (
-          <div className="mt-3 flex flex-wrap gap-2">
-            {formula.split(".").map((cmd, index) => (
-              <span
-                key={index}
-                className="inline-flex items-center px-2.5 py-1 text-xs font-mono bg-zinc-800/50 border border-zinc-700/50 rounded-md text-zinc-400"
-              >
-                <span className="w-4 h-4 rounded-full bg-blue-500/20 text-blue-400 flex items-center justify-center text-[10px] mr-2">
-                  {index + 1}
-                </span>
-                {cmd}
+        {/* Technical Functions */}
+        <div className="relative group bg-black/60 border border-emerald-500/20 rounded-xl overflow-hidden">
+          {/* Header */}
+          <div className="flex items-center justify-between px-4 py-2 bg-emerald-500/5 border-b border-emerald-500/10">
+            <div className="flex items-center gap-2">
+              <Code className="w-3.5 h-3.5 text-emerald-400/80" />
+              <span className="text-xs font-medium text-emerald-400/80 uppercase tracking-wider">
+                Technical Functions Executed in Backend
               </span>
-            ))}
+            </div>
+            <Button
+              data-testid="copy-technical-button"
+              variant="ghost"
+              size="icon"
+              onClick={handleCopyTech}
+              className="w-7 h-7 opacity-0 group-hover:opacity-100 transition-opacity duration-200 hover:bg-emerald-500/10"
+            >
+              {copiedTech ? (
+                <Check className="w-3.5 h-3.5 text-green-400" />
+              ) : (
+                <Copy className="w-3.5 h-3.5 text-emerald-400" />
+              )}
+            </Button>
+          </div>
+
+          {/* Technical content */}
+          <div className="px-5 py-4">
+            <code
+              data-testid="technical-functions"
+              className="font-mono text-lg text-emerald-300 tracking-wide break-all"
+            >
+              {technical}
+            </code>
+          </div>
+
+          {/* Visual accent */}
+          <div className="absolute bottom-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-emerald-500/30 to-transparent" />
+        </div>
+
+        {/* Command breakdown */}
+        {userText && userText.includes(".") && (
+          <div className="mt-3 space-y-2">
+            <span className="text-xs text-zinc-500 uppercase tracking-wider">Execution Steps:</span>
+            <div className="flex flex-wrap gap-2">
+              {userText.split(".").map((cmd, index) => {
+                const techCmd = technical ? technical.split(".")[index] : "";
+                return (
+                  <div
+                    key={index}
+                    className="flex items-center gap-2 px-3 py-2 text-xs font-mono bg-zinc-800/50 border border-zinc-700/50 rounded-lg"
+                  >
+                    <span className="w-5 h-5 rounded-full bg-blue-500/20 text-blue-400 flex items-center justify-center text-[10px] font-semibold">
+                      {index + 1}
+                    </span>
+                    <div className="flex flex-col">
+                      <span className="text-zinc-300">{cmd}</span>
+                      <span className="text-emerald-400/70 text-[10px]">{techCmd}</span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
           </div>
         )}
       </div>
