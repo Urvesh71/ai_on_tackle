@@ -10,6 +10,16 @@ from typing import List, Optional
 import uuid
 from datetime import datetime, timezone
 from emergentintegrations.llm.chat import LlmChat, UserMessage
+import json
+
+# Import RAG retriever
+from rag_retriever import (
+    initialize_vector_store,
+    retrieve_relevant_commands,
+    get_all_commands,
+    reload_commands,
+    get_command_count
+)
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -25,143 +35,27 @@ app = FastAPI()
 # Create a router with the /api prefix
 api_router = APIRouter(prefix="/api")
 
-# Command mapping JSON data
-COMMAND_MAPPING = {
-    "Top": "verticalAlignTop",
-    "Middle": "verticalAlignMiddle",
-    "Bottom": "verticalAlignBottom",
-    "Left": "textAlignLeft",
-    "Center": "textAlignCenter",
-    "Right": "textAlignRight",
-    "Toggle Favorite": "toggleFavoriteProcess",
-    "ScreenShot": "takeScreenshot",
-    "Full Screen": "fullScreen",
-    "Copy": "copy",
-    "Cut": "cut",
-    "Paste": "paste",
-    "Merge": "merge",
-    "Add Comment": "addComment",
-    "Delete Comment": "deleteComment",
-    "Go to": "goTo",
-    "Fill Right": "fillDirectionRight",
-    "Fill Down": "fillDirectionDown",
-    "Fill Up": "fillDirectionUp",
-    "Fill Left": "fillDirectionLeft",
-    "Series": "toggleSeriesDialogVisibility",
-    "Bold": "bold",
-    "Clear Style": "clearStyle",
-    "English": "setLanguageEnglish",
-    "Deutsch": "setLanguageDeutsch",
-    "Log out": "logout",
-    "Profile": "toggleProfileDialog",
-    "Add Row": "addRow",
-    "Delete Row": "deleteRow",
-    "Move Row Up": "moveRowUp",
-    "Move Row Down": "moveRowDown",
-    "Add Arrow": "addArrow",
-    "Delete Arrow": "deleteArrow",
-    "Add Column": "addColumn",
-    "Delete Column": "deleteColumn",
-    "Move Column Right": "moveColumnRight",
-    "Move Column Left": "moveColumnLeft",
-    "Players": "showPlayersTab",
-    "Processes": "showProcessesTab",
-    "Action Flow": "toggleProcessFlow",
-    "teams": "showTeamsTab",
-    "Sheets": "showSheetsTab",
-    "New Sheet": "addSheet",
-    "Quick Acces Toolbar": "quickAccessToolbar",
-    "Blue Zone": "showRedZone",
-    "Game Zone": "showGameZone",
-    "New Process": "newNormalProcess",
-    "New Posting Process": "newPostingProcess",
-    "New Grid": "newGrid",
-    "Open Process/Grid": "open",
-    "New Folder": "newFolder",
-    "Rename Process/Grid": "renameProcess",
-    "Toggle Expand": "expandItem",
-    "Trash": "showTrash",
-    "Hide Trash": "hideTrash",
-    "Restore": "restore",
-    "New Player": "newPlayer",
-    "Rename Player": "renamePlayer",
-    "Rename Sheet": "editSheet",
-    "Font Size": "fontSize",
-    "Width": "width",
-    "Height": "height",
-    "Add Player": "addPlayer",
-    "Edit Player": "editPlayer",
-    "Hide Row": "updateVisibilityHideRow",
-    "Hide Column": "updateVisibilityHideColumn",
-    "Auto Layout": "autoLayout",
-    "Toggle Action Flow lines": "toggleProcessFlowLines",
-    "Add Action Flow Arrow": "addProcessFlowArrow",
-    "Circle Type": "changeCircleType",
-    "Table": "openTable",
-    "Toggle Gridlines": "toggleGridlines",
-    "General": "setDataTypeGeneral",
-    "Number": "setDataTypeNumber",
-    "Currency": "setDataTypeCurrency",
-    "ShortDate": "setDataTypeShortDate",
-    "LongDate": "setDataTypeLongDate",
-    "Time": "setDataTypeTime",
-    "Fraction": "setDataTypeFraction",
-    "Text": "setDataTypeText",
-    "Percentage": "setDataTypePercentage",
-    "Name Manger": "openNameManager",
-    "Name Range": "openAddNameRange",
-    "Process From SAP": "addProcessFromCycle",
-    "Rename Table": "renameTable",
-    "Toggle Auto Append": "toggleAutoAppend",
-    "Toggle Is Column Formula": "toggleIsColumnFormula",
-    "Sort A Z": "sortAsc",
-    "Sort Z A": "sortDesc",
-    "Filter Table": "filter",
-    "Open Filter": "openFilter",
-    "Clear Filter": "clearFilter",
-    "Formula Box": "formulaBox",
-    "Pink Zone": "blueZone",
-    "Grids": "showGridsTab",
-    "Business Case": "showBusinessTab",
-    "Fetch Grid Data": "fetchGridData",
-    "Duplicate sheet": "duplicateSheet",
-    "Unmerge": "unmerge",
-    "Watermark Visibility": "setWatermarkVisibility",
-    "Start Style": "startStyles",
-    "Load Satellite": "loadSatellite",
-    "Transfer To Grid": "transferToGrid",
-    "Borders": "borders",
-    "Stream": "showStreamsTab",
-    "Logzone": "showLogzone",
-    "Unhide rows": "updateVisibilityUnhideRows",
-    "Unhide columns": "updateVisibilityUnhideColumns",
-    "Delete": "delete",
-    "Delete Sheet": "deleteSheet",
-    "Delete Process": "deleteProcess",
-    "Delete Grid": "deleteGrid",
-    "Delete Player": "deletePlayer",
-    "Lock Range Selection": "lockRangeSelection",
-    "Unlock Range Selection": "unlockRangeSelection",
-    "Lock Format Cells": "lockFormating",
-    "Unlock Format Cells": "unlockFormating",
-    "Lock Cells": "lockCellsProtection",
-    "Unlock Cells": "unlockCellsProtection",
-    "Hide Cells Content": "hideCellsContent",
-    "Unhide Cells Content": "unhideCellsContent",
-    "Clear Protection": "clearProtections",
-    "Lock Sort": "lockSortProtection",
-    "Unlock Sort": "unlockSortProtection",
-    "Hide Formula Visiblity": "hideFormulaVisibility",
-    "Unhide Formula Visiblity": "unhideFormulaVisibility",
-    "Open Protection Permissions": "togglePermissionMatrix",
-    "Open Add Corner Dialog": "showAddCornerDialog"
-}
+# Initialize RAG vector store on startup
+@app.on_event("startup")
+async def startup_event():
+    """Initialize the RAG vector store on application startup"""
+    logger.info("Initializing RAG vector store...")
+    count = initialize_vector_store()
+    logger.info(f"RAG vector store initialized with {count} commands")
 
-# System prompt for the LLM
-SYSTEM_PROMPT = """You are a command interpreter for a spreadsheet-like application. Your job is to analyze user requests and map them to commands, returning both the user-friendly command names and their technical function names.
 
-AVAILABLE COMMANDS (Format: "Command Name" -> technicalFunctionName):
-""" + "\n".join([f'- "{key}" -> {value}' for key, value in COMMAND_MAPPING.items()]) + """
+def build_rag_prompt(relevant_commands: list[dict]) -> str:
+    """Build the system prompt with only relevant commands (RAG approach)"""
+    
+    commands_text = "\n".join([
+        f'- "{cmd["command_name"]}" -> {cmd["technical_function"]}'
+        for cmd in relevant_commands
+    ])
+    
+    return f"""You are a command interpreter for a spreadsheet-like application. Your job is to analyze user requests and map them to commands, returning both the user-friendly command names and their technical function names.
+
+RELEVANT COMMANDS FOR THIS QUERY (retrieved via semantic search):
+{commands_text}
 
 RULES:
 1. Identify distinct actions from the user's request
@@ -169,29 +63,24 @@ RULES:
    - The command name (human-readable key)
    - The technical function name (the value)
 3. Return your response in this EXACT JSON format:
-   {"user_text": "Command1.Command2.Command3", "technical": "function1.function2.function3"}
+   {{"user_text": "Command1.Command2.Command3", "technical": "function1.function2.function3"}}
 4. If a command requires parameters (like cell ranges), append them in parentheses to BOTH: CommandName(param) and functionName(param)
 5. Commands are executed in order they appear
 6. Use the dot (.) as delimiter between commands
 7. Return ONLY the JSON object, nothing else. No explanations, no additional text.
+8. ONLY use commands from the RELEVANT COMMANDS list above. If no match found, use "UNKNOWN_COMMAND".
 
 EXAMPLES:
 - User: "go to grids, create table, apply borders"
-  Response: {"user_text": "Grids.Table.Borders", "technical": "showGridsTab.openTable.borders"}
+  Response: {{"user_text": "Grids.Table.Borders", "technical": "showGridsTab.openTable.borders"}}
 
 - User: "delete row, hide column, sort data"
-  Response: {"user_text": "Delete Row.Hide Column.Sort A Z", "technical": "deleteRow.updateVisibilityHideColumn.sortAsc"}
+  Response: {{"user_text": "Delete Row.Hide Column.Sort A Z", "technical": "deleteRow.updateVisibilityHideColumn.sortAsc"}}
 
 - User: "copy and paste"
-  Response: {"user_text": "Copy.Paste", "technical": "copy.paste"}
+  Response: {{"user_text": "Copy.Paste", "technical": "copy.paste"}}
 
-- User: "show grids"
-  Response: {"user_text": "Grids", "technical": "showGridsTab"}
-
-- User: "go to blue zone, open grids, add corner dialog for Sheet1$E$10:$G$20"
-  Response: {"user_text": "Pink Zone.Grids.Open Add Corner Dialog(Sheet1$E$10:$G$20)", "technical": "blueZone.showGridsTab.showAddCornerDialog(Sheet1$E$10:$G$20)"}
-
-If the user's request doesn't match any command, respond with: {"user_text": "UNKNOWN_COMMAND", "technical": "UNKNOWN_COMMAND"}"""
+If the user's request doesn't match any command in the list, respond with: {{"user_text": "UNKNOWN_COMMAND", "technical": "UNKNOWN_COMMAND"}}"""
 
 
 # Define Models
@@ -222,6 +111,7 @@ class ChatResponse(BaseModel):
     technical: str
     session_id: str
     message_id: str
+    retrieved_commands: Optional[List[dict]] = None  # Show which commands were retrieved
 
 
 # Add your routes to the router instead of directly to app
@@ -248,7 +138,7 @@ async def get_status_checks():
 
 @api_router.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
-    """Process user message and return command formula"""
+    """Process user message using RAG to retrieve relevant commands"""
     try:
         session_id = request.session_id or str(uuid.uuid4())
         api_key = os.environ.get('EMERGENT_LLM_KEY')
@@ -256,35 +146,40 @@ async def chat(request: ChatRequest):
         if not api_key:
             raise HTTPException(status_code=500, detail="LLM API key not configured")
         
-        # Initialize the chat with Claude
-        chat = LlmChat(
+        # RAG Step 1: Retrieve relevant commands using semantic search
+        logger.info(f"Retrieving relevant commands for: {request.message}")
+        relevant_commands = retrieve_relevant_commands(request.message, top_k=15)
+        logger.info(f"Retrieved {len(relevant_commands)} relevant commands")
+        
+        # RAG Step 2: Build prompt with only relevant commands
+        system_prompt = build_rag_prompt(relevant_commands)
+        
+        # RAG Step 3: Generate response using LLM with augmented context
+        chat_instance = LlmChat(
             api_key=api_key,
             session_id=f"command-{session_id}",
-            system_message=SYSTEM_PROMPT
+            system_message=system_prompt
         ).with_model("anthropic", "claude-sonnet-4-5-20250929")
         
         # Create user message
         user_message = UserMessage(text=request.message)
         
         # Get response from Claude
-        response_text = await chat.send_message(user_message)
+        response_text = await chat_instance.send_message(user_message)
         response_text = response_text.strip()
         
         # Remove markdown code blocks if present
         if response_text.startswith("```"):
             lines = response_text.split("\n")
-            # Remove first line (```json) and last line (```)
             response_text = "\n".join(lines[1:-1] if lines[-1] == "```" else lines[1:])
             response_text = response_text.strip()
         
         # Parse the JSON response
-        import json
         try:
             parsed = json.loads(response_text)
             user_text = parsed.get("user_text", "UNKNOWN_COMMAND")
             technical = parsed.get("technical", "UNKNOWN_COMMAND")
         except json.JSONDecodeError:
-            # Fallback if not valid JSON
             user_text = response_text
             technical = response_text
         
@@ -309,11 +204,18 @@ async def chat(request: ChatRequest):
         assistant_doc['timestamp'] = assistant_doc['timestamp'].isoformat()
         await db.chat_messages.insert_one(assistant_doc)
         
+        # Format retrieved commands for response (top 5 for display)
+        retrieved_for_display = [
+            {"name": cmd["command_name"], "function": cmd["technical_function"], "score": round(cmd["relevance_score"], 3)}
+            for cmd in relevant_commands[:5]
+        ]
+        
         return ChatResponse(
             user_text=user_text,
             technical=technical,
             session_id=session_id,
-            message_id=assistant_msg.id
+            message_id=assistant_msg.id,
+            retrieved_commands=retrieved_for_display
         )
         
     except Exception as e:
@@ -337,7 +239,23 @@ async def get_chat_history(session_id: str):
 @api_router.get("/commands")
 async def get_commands():
     """Get all available commands"""
-    return {"commands": COMMAND_MAPPING}
+    return {"commands": get_all_commands(), "total": get_command_count()}
+
+@api_router.post("/commands/reload")
+async def reload_commands_endpoint():
+    """Reload commands from JSON file and re-index in vector store"""
+    reload_commands()
+    return {"message": "Commands reloaded successfully", "total": get_command_count()}
+
+@api_router.get("/rag/stats")
+async def get_rag_stats():
+    """Get RAG system statistics"""
+    return {
+        "total_commands": get_command_count(),
+        "embedding_model": "all-MiniLM-L6-v2",
+        "vector_store": "ChromaDB (in-memory)",
+        "retrieval_top_k": 15
+    }
 
 
 # Include the router in the main app
