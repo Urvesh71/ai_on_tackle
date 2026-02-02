@@ -116,7 +116,7 @@ const ChatPage = () => {
           </div>
           <div className="ml-auto flex items-center gap-2 text-xs text-zinc-500">
             <Sparkles className="w-3 h-3 text-blue-400" />
-            <span>Powered by Claude</span>
+            <span>Powered by Llama 3.1:8b from Ollama</span>
           </div>
         </header>
 
