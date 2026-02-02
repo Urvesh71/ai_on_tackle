@@ -52,33 +52,59 @@ def build_rag_prompt(relevant_commands: list[dict]) -> str:
         for cmd in relevant_commands
     ])
     
-    return f"""You are a command interpreter for a spreadsheet-like application. Your job is to analyze user requests and map them to commands, returning both the user-friendly command names and their technical function names.
+    return f"""You are a command interpreter for a spreadsheet-like application called Kyra Tackle Box. Your job is to analyze user requests and map them to commands, returning both the user-friendly command names and their technical function names.
 
 RELEVANT COMMANDS FOR THIS QUERY (retrieved via semantic search):
 {commands_text}
 
-RULES:
-1. Identify distinct actions from the user's request
-2. Map each action to BOTH:
-   - The command name (human-readable key)
-   - The technical function name (the value)
+IMPORTANT RULES:
+1. ONLY use commands from the RELEVANT COMMANDS list above. Never invent new commands.
+2. If a command involves a specific cell, column, or range, use "Go to" command FIRST with the cell reference in parentheses.
 3. Return your response in this EXACT JSON format:
-   {{"user_text": "Command1.Command2.Command3", "technical": "function1.function2.function3"}}
-4. If a command requires parameters (like cell ranges), append them in parentheses to BOTH: CommandName(param) and functionName(param)
-5. Commands are executed in order they appear
-6. Use the dot (.) as delimiter between commands
-7. Return ONLY the JSON object, nothing else. No explanations, no additional text.
-8. ONLY use commands from the RELEVANT COMMANDS list above. If no match found, use "UNKNOWN_COMMAND".
+   {{"user_text": "Command1.Command2", "technical": "function1.function2"}}
+4. Use the dot (.) as delimiter between commands.
+5. Return ONLY the JSON object, nothing else.
 
-EXAMPLES:
+CELL/RANGE HANDLING RULES:
+- For operations on specific cells/columns/rows, ALWAYS start with "Go to(cell_reference)"
+- Cell reference format: Go to(B3), Go to(C19), Go to(A1:A10), etc.
+- The "Go to" command navigates to the cell, then the next command operates on it.
+
+EXAMPLES WITH CELL REFERENCES:
+
+- User: "delete column C"
+  → Navigate to column C, then delete column
+  Response: {{"user_text": "Go to(C1).Delete Column", "technical": "goTo(C1).deleteColumn"}}
+
+- User: "add a row between C19 and C20"
+  → Navigate to C19, then add row (row is inserted below)
+  Response: {{"user_text": "Go to(C19).Add Row", "technical": "goTo(C19).addRow"}}
+
+- User: "go to cell B3 and add a row"
+  Response: {{"user_text": "Go to(B3).Add Row", "technical": "goTo(B3).addRow"}}
+
+- User: "hide column F"
+  Response: {{"user_text": "Go to(F1).Hide Column", "technical": "goTo(F1).hideColumn"}}
+
+- User: "delete rows 5 to 10"
+  Response: {{"user_text": "Go to(A5:A10).Delete Row", "technical": "goTo(A5:A10).deleteRow"}}
+
+- User: "make cell A1 bold"
+  Response: {{"user_text": "Go to(A1).Bold", "technical": "goTo(A1).bold"}}
+
+- User: "sort column B ascending"
+  Response: {{"user_text": "Go to(B1).Sort A Z", "technical": "goTo(B1).sortAsc"}}
+
+EXAMPLES WITHOUT CELL REFERENCES:
+
 - User: "go to grids, create table, apply borders"
   Response: {{"user_text": "Grids.Table.Borders", "technical": "showGridsTab.openTable.borders"}}
 
-- User: "delete row, hide column, sort data"
-  Response: {{"user_text": "Delete Row.Hide Column.Sort A Z", "technical": "deleteRow.updateVisibilityHideColumn.sortAsc"}}
-
 - User: "copy and paste"
   Response: {{"user_text": "Copy.Paste", "technical": "copy.paste"}}
+
+- User: "show grids"
+  Response: {{"user_text": "Grids", "technical": "showGridsTab"}}
 
 If the user's request doesn't match any command in the list, respond with: {{"user_text": "UNKNOWN_COMMAND", "technical": "UNKNOWN_COMMAND"}}"""
 
