@@ -14,26 +14,7 @@ services:
       - MONGO_INITDB_DATABASE=kyra_db
     networks:
       - kyra-network
-
-  # Ollama LLM Service
-  ollama:
-    image: ollama/ollama:latest
-    container_name: kyra-ollama
-    restart: unless-stopped
-    ports:
-      - "11434:11434"
-    volumes:
-      - ollama_data:/root/.ollama
-    # Uncomment below for GPU support (NVIDIA)
-    # deploy:
-    #   resources:
-    #     reservations:
-    #       devices:
-    #         - driver: nvidia
-    #           count: 1
-    #           capabilities: [gpu]
-    networks:
-      - kyra-network
+      - prototyp-orbit-llm_web
 
   # Backend API (FastAPI)
   backend:
@@ -51,9 +32,9 @@ services:
       - OLLAMA_HOST=http://ollama:11434
     depends_on:
       - mongodb
-      - ollama
     networks:
       - kyra-network
+      - prototyp-orbit-llm_web
 
   # Frontend (React + Nginx)
   frontend:
@@ -71,29 +52,14 @@ services:
     networks:
       - kyra-network
 
-  # Nginx Reverse Proxy (Optional - for production)
-  nginx:
-    image: nginx:alpine
-    container_name: kyra-nginx
-    restart: unless-stopped
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-      - ./nginx/ssl:/etc/nginx/ssl:ro
-    depends_on:
-      - frontend
-      - backend
-    networks:
-      - kyra-network
-    profiles:
-      - production
-
 volumes:
   mongodb_data:
-  ollama_data:
 
 networks:
+  # Internal network for this stack
   kyra-network:
     driver: bridge
+  
+  # External network where Ollama is running
+  prototyp-orbit-llm_web:
+    external: true
