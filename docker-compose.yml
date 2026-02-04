@@ -1,21 +1,6 @@
 version: '3.8'
 
 services:
-  # MongoDB Database
-  mongodb:
-    image: mongo:7.0
-    container_name: kyra-mongodb
-    restart: unless-stopped
-    ports:
-      - "27017:27017"
-    volumes:
-      - mongodb_data:/data/db
-    environment:
-      - MONGO_INITDB_DATABASE=kyra_db
-    networks:
-      - kyra-network
-      - prototyp-orbit-llm_web
-
   # Backend API (FastAPI)
   backend:
     build:
@@ -26,12 +11,10 @@ services:
     ports:
       - "8001:8001"
     environment:
-      - MONGO_URL=mongodb://mongodb:27017
-      - DB_NAME=kyra_db
+      - MONGO_URL=${MONGO_URL}
+      - DB_NAME=${DB_NAME}
       - CORS_ORIGINS=*
       - OLLAMA_HOST=http://ollama:11434
-    depends_on:
-      - mongodb
     networks:
       - kyra-network
       - prototyp-orbit-llm_web
@@ -42,7 +25,7 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
       args:
-        - REACT_APP_BACKEND_URL=http://localhost:8001
+        - REACT_APP_BACKEND_URL=${REACT_APP_BACKEND_URL:-http://localhost:8001}
     container_name: kyra-frontend
     restart: unless-stopped
     ports:
@@ -51,9 +34,6 @@ services:
       - backend
     networks:
       - kyra-network
-
-volumes:
-  mongodb_data:
 
 networks:
   # Internal network for this stack
