@@ -58,53 +58,59 @@ RELEVANT COMMANDS FOR THIS QUERY (retrieved via semantic search):
 {commands_text}
 
 IMPORTANT RULES:
-1. ONLY use commands from the RELEVANT COMMANDS list above. Never invent new commands.
-2. If a command involves a specific cell, column, or range, use "Go to" command FIRST with the cell reference in parentheses.
-3. Return your response in this EXACT JSON format:
+1. ONLY use commands from the RELEVANT COMMANDS list above. Never invent new commands or function names.
+2. The "user_text" must use the EXACT command name (left side, e.g., "delete Column") from the list.
+3. The "technical" must use the EXACT technical function name (right side, e.g., "delete_Column_Selected") from the list.
+4. If a command involves a specific cell, column, or range, use the "Goto Range" command FIRST with the cell reference in parentheses.
+5. Return your response in this EXACT JSON format:
    {{"user_text": "Command1.Command2", "technical": "function1.function2"}}
-4. Use the dot (.) as delimiter between commands.
-5. Return ONLY the JSON object, nothing else.
+6. Use the dot (.) as delimiter between commands.
+7. Return ONLY the JSON object, nothing else.
 
 CELL/RANGE HANDLING RULES:
-- For operations on specific cells/columns/rows, ALWAYS start with "Go to(cell_reference)"
-- Cell reference format: Go to(B3), Go to(C19), Go to(A1:A10), etc.
-- The "Go to" command navigates to the cell, then the next command operates on it.
+- For operations on specific cells/columns/rows, ALWAYS start with "Goto Range(cell_reference)"
+- Cell reference format: Goto Range(B3), Goto Range(C19), Goto Range(A1:A10), etc.
+- The "Goto Range" command navigates to the cell, then the next command operates on it.
+- The technical function for "Goto Range" is "goto_Range".
 
 EXAMPLES WITH CELL REFERENCES:
 
 - User: "delete column C"
   → Navigate to column C, then delete column
-  Response: {{"user_text": "Go to(C1).Delete Column", "technical": "goTo(C1).deleteColumn"}}
+  Response: {{"user_text": "Goto Range(C1).delete Column", "technical": "goto_Range(C1).delete_Column_Selected"}}
 
 - User: "add a row between C19 and C20"
   → Navigate to C19, then add row (row is inserted below)
-  Response: {{"user_text": "Go to(C19).Add Row", "technical": "goTo(C19).addRow"}}
+  Response: {{"user_text": "Goto Range(C19).Add Row", "technical": "goto_Range(C19).add_Row_Below"}}
 
 - User: "go to cell B3 and add a row"
-  Response: {{"user_text": "Go to(B3).Add Row", "technical": "goTo(B3).addRow"}}
+  Response: {{"user_text": "Goto Range(B3).Add Row", "technical": "goto_Range(B3).add_Row_Below"}}
 
 - User: "hide column F"
-  Response: {{"user_text": "Go to(F1).Hide Column", "technical": "goTo(F1).hideColumn"}}
+  Response: {{"user_text": "Goto Range(F1).hide Column", "technical": "goto_Range(F1).hide_Column_Selected"}}
 
 - User: "delete rows 5 to 10"
-  Response: {{"user_text": "Go to(A5:A10).Delete Row", "technical": "goTo(A5:A10).deleteRow"}}
+  Response: {{"user_text": "Goto Range(A5:A10).Delete Row", "technical": "goto_Range(A5:A10).delete_Row_Selected"}}
 
 - User: "make cell A1 bold"
-  Response: {{"user_text": "Go to(A1).Bold", "technical": "goTo(A1).bold"}}
+  Response: {{"user_text": "Goto Range(A1).apply Bold", "technical": "goto_Range(A1).apply_Format_Bold"}}
 
 - User: "sort column B ascending"
-  Response: {{"user_text": "Go to(B1).Sort A Z", "technical": "goTo(B1).sortAsc"}}
+  Response: {{"user_text": "Goto Range(B1).sort A Z", "technical": "goto_Range(B1).sort_Ascending"}}
 
 EXAMPLES WITHOUT CELL REFERENCES:
 
-- User: "go to grids, create table, apply borders"
-  Response: {{"user_text": "Grids.Table.Borders", "technical": "showGridsTab.openTable.borders"}}
+- User: "open grids, open table, apply borders"
+  Response: {{"user_text": "open Grids Spot.open Table.set Borders", "technical": "open_Grids_Tab.open_Table.set_Cell_Borders"}}
 
 - User: "copy and paste"
-  Response: {{"user_text": "Copy.Paste", "technical": "copy.paste"}}
+  Response: {{"user_text": "Copy.Paste", "technical": "copy_Selection.paste_Clipboard_Content"}}
 
-- User: "show grids"
-  Response: {{"user_text": "Grids", "technical": "showGridsTab"}}
+- User: "show blue zone"
+  Response: {{"user_text": "show Zone Blue", "technical": "show_Zone_Blue"}}
+
+- User: "open grids tab"
+  Response: {{"user_text": "open Grids Spot", "technical": "open_Grids_Tab"}}
 
 If the user's request doesn't match any command in the list, respond with: {{"user_text": "UNKNOWN_COMMAND", "technical": "UNKNOWN_COMMAND"}}"""
 
