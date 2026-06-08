@@ -57,6 +57,43 @@ def is_confirmation(text: str) -> bool:
     return bool(CONFIRM_RE.match(text.strip()))
 
 
+# ---------- Action counting & plan validation ----------
+def split_user_actions(text: str) -> List[str]:
+    """Split a user request into distinct action phrases.
+
+    Splits on commas, 'and', 'then', '+' (case-insensitive).
+    Example: "open grid, create table and apply borders"
+        -> ["open grid", "create table", "apply borders"]
+    """
+    # Normalize separators to comma
+    normalized = re.sub(r"\s+(and|then)\s+", ",", text, flags=re.IGNORECASE)
+    normalized = re.sub(r"\s*\+\s*", ",", normalized)
+    parts = [p.strip(" .;:!?\t") for p in normalized.split(",")]
+    return [p for p in parts if p and len(p) >= 2]
+
+
+def _bare_function(fn: str) -> str:
+    """Strip a trailing '(...)' parameter group, leaving the bare function name."""
+    return re.sub(r"\(.*\)\s*$", "", (fn or "").strip())
+
+
+def validate_plan_steps(steps: List[dict]) -> tuple[List[dict], List[dict]]:
+    """Validate each step's function exists in the loaded commands catalog.
+
+    Returns (valid_steps, invalid_steps).
+    """
+    catalog_funcs = set(get_all_commands().values())
+    valid: List[dict] = []
+    invalid: List[dict] = []
+    for s in steps:
+        bare = _bare_function(s.get("function", ""))
+        if bare and bare in catalog_funcs:
+            valid.append(s)
+        else:
+            invalid.append(s)
+    return valid, invalid
+
+
 # Initialize RAG vector store on startup
 @app.on_event("startup")
 async def startup_event():
@@ -115,6 +152,14 @@ RELEVANT COMMANDS FOR THIS QUERY (retrieved via semantic search):
 {ambiguity_hint}{plan_context}
 
 You MUST respond with exactly ONE of the three JSON shapes below. Return ONLY the JSON object, nothing else.
+
+================================================================
+ABSOLUTE ANTI-HALLUCINATION RULES (read this CAREFULLY):
+================================================================
+- You MUST NEVER invent a command or function name. EVERY `command` and EVERY `function` you emit MUST appear LITERALLY in the RELEVANT COMMANDS list above (left side = "command", right side = function). No exceptions.
+- If you cannot find a matching entry for one of the user's actions in the RELEVANT COMMANDS list, you MUST switch the whole response to "clarify" mode and ask the user which command they meant. DO NOT silently drop the action, and DO NOT make one up.
+- The only exception is the cell-reference parameter inside `Goto Range(...)` / `goto_Range(...)` — the cell/range value (e.g., `A5:E12`, `C1`) is added by you, but the function name `goto_Range` itself must still appear in the list.
+- Before producing a "multi" plan, mentally check: is EVERY function I'm about to emit literally present in the RELEVANT COMMANDS list? If even one is not, switch to "clarify" mode.
 
 ================================================================
 MODE 1 — "single": The user's request maps to EXACTLY ONE command (one action, no cell reference required).
@@ -407,6 +452,44 @@ async def chat(request: ChatRequest):
         if mode == "single":
             user_text = parsed.get("user_text", "UNKNOWN_COMMAND")
             technical = parsed.get("technical", "UNKNOWN_COMMAND")
+
+            # Validate the single function is in the catalog (no hallucination)
+            bare = _bare_function(technical)
+            catalog_funcs = set(get_all_commands().values())
+            if not bare or bare not in catalog_funcs:
+                # Fall back to clarify with suggestions from RAG
+                suggestions = [
+                    ClarifySuggestion(
+                        command=cmd["command_name"],
+                        function=cmd["technical_function"],
+                        why=f"Available command (RAG score {round(cmd['relevance_score'], 2)})",
+                    )
+                    for cmd in relevant_commands[:5]
+                ]
+                question = (
+                    f"I couldn't reliably map your request to a known command "
+                    f"(the model suggested \"{technical}\" which doesn't exist in the catalog). "
+                    "Could you pick from the suggestions below or rephrase?"
+                )
+                await clear_pending_plan(session_id)
+                assistant_msg = ChatMessage(
+                    session_id=session_id,
+                    role="assistant",
+                    content=f"[CLARIFY] {question}",
+                    formula=None,
+                )
+                doc = assistant_msg.model_dump()
+                doc['timestamp'] = doc['timestamp'].isoformat()
+                await db.chat_messages.insert_one(doc)
+                return ChatResponse(
+                    mode="clarify",
+                    session_id=session_id,
+                    message_id=assistant_msg.id,
+                    question=question,
+                    suggestions=suggestions,
+                    retrieved_commands=retrieved_for_display,
+                )
+
             assistant_msg = ChatMessage(
                 session_id=session_id,
                 role="assistant",
@@ -436,6 +519,82 @@ async def chat(request: ChatRequest):
                     "function": str(s.get("function", "")).strip(),
                     "description": str(s.get("description", "")).strip(),
                 })
+
+            # --- Validation: catch hallucinated functions & missing actions ---
+            valid_steps, invalid_steps = validate_plan_steps(steps_clean)
+            user_actions = split_user_actions(request.message)
+            expected_action_count = max(1, len(user_actions))
+
+            # Plan is INVALID if:
+            #   (a) any step uses a function not in the catalog (hallucination), OR
+            #   (b) we have fewer valid steps than distinct actions in the user request
+            #       (and the user clearly listed multiple actions).
+            plan_is_incomplete = (
+                len(invalid_steps) > 0
+                or (expected_action_count >= 2 and len(valid_steps) < expected_action_count)
+            )
+
+            if plan_is_incomplete:
+                # Build a helpful clarify response listing what we couldn't match.
+                problems: List[str] = []
+                if invalid_steps:
+                    problems.append(
+                        "The following step(s) reference a function I don't recognize: "
+                        + "; ".join(
+                            f'"{s["command"]}" -> {s["function"]}' for s in invalid_steps
+                        )
+                    )
+                if expected_action_count >= 2 and len(valid_steps) < expected_action_count:
+                    matched_actions = ", ".join(s["command"] for s in valid_steps) or "(none)"
+                    problems.append(
+                        f"I detected {expected_action_count} distinct actions in your request "
+                        f"({', '.join(repr(a) for a in user_actions)}) but I could only match "
+                        f"{len(valid_steps)} of them ({matched_actions})."
+                    )
+
+                question = (
+                    "I couldn't reliably map every part of your request to a known command. "
+                    + " ".join(problems)
+                    + " Could you rephrase the unclear parts, or pick from the suggestions below?"
+                )
+
+                # Top-5 retrieved commands as suggestions (these definitely exist in the catalog)
+                suggestions = [
+                    ClarifySuggestion(
+                        command=cmd["command_name"],
+                        function=cmd["technical_function"],
+                        why=f"Available command (RAG score {round(cmd['relevance_score'], 2)})",
+                    )
+                    for cmd in relevant_commands[:5]
+                ]
+
+                # Clear any stale plan
+                await clear_pending_plan(session_id)
+
+                assistant_msg = ChatMessage(
+                    session_id=session_id,
+                    role="assistant",
+                    content=f"[CLARIFY] {question}",
+                    formula=None,
+                )
+                doc = assistant_msg.model_dump()
+                doc['timestamp'] = doc['timestamp'].isoformat()
+                await db.chat_messages.insert_one(doc)
+
+                return ChatResponse(
+                    mode="clarify",
+                    session_id=session_id,
+                    message_id=assistant_msg.id,
+                    question=question,
+                    suggestions=suggestions,
+                    retrieved_commands=retrieved_for_display,
+                )
+
+            # --- All steps are valid → renumber and proceed as a plan ---
+            for idx, s in enumerate(valid_steps, start=1):
+                s["n"] = idx
+            steps_clean = valid_steps
+
             confirmation_message = parsed.get(
                 "confirmation_message",
                 "Please confirm this sequence is correct. Reply 'yes' to proceed, or describe any changes."
