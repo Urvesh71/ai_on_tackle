@@ -39,6 +39,10 @@ api_router = APIRouter(prefix="/api")
 # RAG ambiguity threshold — if top-1 similarity < this, we flag the request as ambiguous
 AMBIGUITY_THRESHOLD = 0.40
 
+# Code version marker — bumped on each meaningful change so you can verify
+# which build is actually running inside your container.
+CODE_VERSION = "2026.02.07-grid-pre-check-v2"
+
 # Phrases that indicate the user is confirming a previously proposed plan
 CONFIRM_RE = re.compile(
     r"^\s*("
@@ -78,20 +82,36 @@ def _bare_function(fn: str) -> str:
 
 
 # Phrases that ALWAYS mean ambiguous-grid (standalone usage triggers clarify)
+# Permissive: catches "create grid", "create the grid", "open a new grid",
+# "i want to create grid", "let's make a new grid", etc.
 AMBIGUOUS_GRID_RE = re.compile(
-    r"^\s*(please\s+|pls\s+)?"
-    r"(create|make|new|open|add)\s+"
-    r"(a\s+)?(new\s+)?grid"
-    r"\s*[\.\!]?\s*$",
+    r"^\s*"
+    # Optional polite prefix or "I want to" / "let's" / "can you"
+    r"(please\s+|pls\s+|kindly\s+|just\s+|"
+    r"can\s+you\s+(please\s+)?|could\s+you\s+(please\s+)?|"
+    r"i\s+(want|need|would\s+like)\s+to\s+|"
+    r"i\s+wanna\s+|"
+    r"lets?\s+|let'?s\s+|"
+    r"hey[,\s]+\s*|hi[,\s]+\s*)?"
+    # Main verb
+    r"(create|make|new|open|add|build|start|generate|setup|set\s+up|insert|spawn)\s+"
+    # Optional determiner & adjective(s)
+    r"((a|an|the|this|that|another|one|some|my|our)\s+)?"
+    r"((new|fresh|empty|blank|another|additional)\s+)?"
+    r"((a|an|the)\s+)?"
+    # The word "grid"
+    r"grid"
+    # Optional trailing punctuation
+    r"\s*[\.\!\?]*\s*$",
     re.IGNORECASE,
 )
 
 
 def is_ambiguous_grid_phrase(text: str) -> bool:
     """True if the user's message is a STANDALONE ambiguous grid request like
-    'create grid', 'open grid', 'new grid', 'make a new grid', etc.
-    (Used as a server-side pre-check before the LLM, so 8B-class models
-    cannot miss the rule.)
+    'create grid', 'open grid', 'create the grid', 'i want to make a new grid', etc.
+    (Used as a server-side pre-check before the LLM, so the model
+    cannot miss the rule regardless of size.)
     """
     return bool(AMBIGUOUS_GRID_RE.match(text.strip()))
 
@@ -117,6 +137,7 @@ def validate_plan_steps(steps: List[dict]) -> tuple[List[dict], List[dict]]:
 @app.on_event("startup")
 async def startup_event():
     """Initialize the RAG vector store on application startup"""
+    logger.info(f"=== Server starting — CODE_VERSION = {CODE_VERSION} ===")
     logger.info("Initializing RAG vector store...")
     count = initialize_vector_store()
     logger.info(f"RAG vector store initialized with {count} commands")
@@ -473,6 +494,7 @@ async def chat(request: ChatRequest):
         # 8B-class models can miss subtle prompt rules. Intercept here so the
         # clarify question ALWAYS fires for these specific standalone phrases.
         if is_ambiguous_grid_phrase(request.message):
+            logger.info(f"[PRE-CHECK] Ambiguous grid phrase detected: {request.message!r} → returning clarify")
             question = "Do you need to navigate to the Grids tab first, or just create a new grid in the current view?"
             suggestions = [
                 ClarifySuggestion(
@@ -805,6 +827,7 @@ async def get_rag_stats():
     """Get RAG system statistics"""
     ollama_host = os.environ.get('OLLAMA_HOST', 'http://localhost:11434')
     return {
+        "code_version": CODE_VERSION,
         "total_commands": get_command_count(),
         "embedding_model": "all-MiniLM-L6-v2",
         "vector_store": "ChromaDB (in-memory)",
@@ -814,6 +837,12 @@ async def get_rag_stats():
         "ollama_host": ollama_host,
         "ambiguity_threshold": AMBIGUITY_THRESHOLD,
     }
+
+
+@api_router.get("/version")
+async def get_version():
+    """Lightweight endpoint to verify which code build is running."""
+    return {"code_version": CODE_VERSION}
 
 
 # Include the router in the main app
