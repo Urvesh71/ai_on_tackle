@@ -178,24 +178,30 @@ JSON shape:
   {{"n":2,"command":"<command name>","function":"<technical function>","description":"<short human description>"}}
 ],"confirmation_message":"Please confirm this sequence is correct. Reply 'yes' to proceed, or describe any changes."}}
 
-CRITICAL RULES for multi:
-- Use "Goto Range(<cell_or_range>)" → "goto_Range(<cell_or_range>)" whenever a specific cell, column or range is involved (e.g., A5:E12, B1, C19). This step always comes BEFORE the action that operates on it.
-- Each step's "command" must be the EXACT command name from the RELEVANT COMMANDS list.
-- Each step's "function" must be the EXACT technical function from the list.
-- Step ordering must match the order the user described.
-- Always include the confirmation_message field exactly as shown.
-
 ACTION-COUNTING RULE (very important):
 - Count the DISTINCT actions/verbs in the user's request. They are typically separated by commas (","), the word "and", the word "then", or the symbol "+".
 - Your "steps" list MUST contain AT LEAST that many action steps (plus extra "Goto Range" steps for cell navigation when required).
 - NEVER merge two distinct user actions into one step, even if they look related.
-- Example: "open grid, create table, apply borders" = 3 distinct actions → at least 3 steps.
+- Example: "open grid, create table, apply borders" = 3 distinct actions → at least 3 action steps (and 1 implicit `Goto Range(Selection)` step before the first selection-based action — see RANGE INFERENCE below).
 
-DISAMBIGUATION HINTS (apply these specifically):
-- "create table" or "new table" or "make a table" → emit the `open Table` step (function `open_Table`). DO NOT collapse it into `New Grid`. A grid is a container; a table is a separate object inside it.
-- "open grid" or "go to grids" or "show grids" → emit `open Grids Spot` (function `open_Grids_Tab`). DO NOT use `New Grid` unless the user explicitly says "create grid" or "new grid".
-- "create grid" or "new grid" → use `New Grid` (function `create_Grid`).
-- "select range X:Y" or operations on a specific cell/range → use `Goto Range(X:Y)` (function `goto_Range(X:Y)`) BEFORE the action.
+DISAMBIGUATION HINTS:
+- "open grid" / "create grid" / "new grid" → use `New Grid` → `create_Grid`. (Use this when the user wants to start a new working grid; this is the common case.)
+- "go to grids tab" / "show grids tab" / "switch to grids" → use `open Grids Spot` → `open_Grids_Tab` (only when the user explicitly says "tab" or wants to navigate the UI).
+- "create table" / "new table" / "make a table" / "open table" → use `open Table` → `open_Table`. Never use `New Grid` for this.
+- "apply borders" / "add borders" / "set borders" / "make borders" → use `apply Borders` (or `set Borders`) → `set_Cell_Borders`.
+
+RANGE INFERENCE RULE (very important):
+- Some actions inherently operate on a selection/range: applying borders, formatting (bold/italic/font/alignment), merge/unmerge, fill direction, sort, filter, table placement, deleting/hiding rows or columns, etc.
+- If the user mentions such an action but does NOT specify a cell or range (e.g., "apply borders" with no "A5:E12"), you MUST insert an explicit `Goto Range` step BEFORE the first such action. Use the LITERAL placeholder `Selection` as the parameter, like this:
+    {{"n":N,"command":"Goto Range","function":"goto_Range(Selection)","description":"Select the current range"}}
+- If the user DID specify a cell/range (e.g., "in A5:E12"), use that value instead of `Selection`, e.g., `goto_Range(A5:E12)`.
+- Insert the `Goto Range` step ONCE before the first selection-based action; do NOT repeat it before every following action that also uses the same selection.
+
+CRITICAL RULES for multi:
+- Each step's "command" must be the EXACT command name from the RELEVANT COMMANDS list.
+- Each step's "function" must be the EXACT technical function from the list (the only thing you may add is a `(...)` parameter group for `goto_Range`).
+- Step ordering must match the order the user described, with `Goto Range` inserted per the RANGE INFERENCE rule above.
+- Always include the confirmation_message field exactly as shown.
 
 ================================================================
 MODE 3 — "clarify": The request has a typo, is ambiguous, or none of the relevant commands clearly match.
@@ -220,15 +226,14 @@ User: "copy and paste"
 Response: {{"mode":"multi","steps":[{{"n":1,"command":"Copy","function":"copy_Selection","description":"Copy the current selection"}},{{"n":2,"command":"Paste","function":"paste_Clipboard_Content","description":"Paste the clipboard content"}}],"confirmation_message":"Please confirm this sequence is correct. Reply 'yes' to proceed, or describe any changes."}}
 
 User: "open grid, create table, apply borders"
-(3 distinct actions, no cell reference → 3 steps. NOTE: "create table" means `open Table`, NOT `New Grid`.)
-Response: {{"mode":"multi","steps":[{{"n":1,"command":"open Grids Spot","function":"open_Grids_Tab","description":"Open the Grids tab"}},{{"n":2,"command":"open Table","function":"open_Table","description":"Open / create a table"}},{{"n":3,"command":"apply Borders","function":"set_Cell_Borders","description":"Apply borders to the cells"}}],"confirmation_message":"Please confirm this sequence is correct. Reply 'yes' to proceed, or describe any changes."}}
+(3 distinct actions, no cell reference → 4 steps with an inferred `Goto Range(Selection)`.)
+Response: {{"mode":"multi","steps":[{{"n":1,"command":"New Grid","function":"create_Grid","description":"Create a new grid"}},{{"n":2,"command":"Goto Range","function":"goto_Range(Selection)","description":"Select the current range"}},{{"n":3,"command":"open Table","function":"open_Table","description":"Open / create a table in the selected range"}},{{"n":4,"command":"apply Borders","function":"set_Cell_Borders","description":"Apply borders to the selected cells"}}],"confirmation_message":"Please confirm this sequence is correct. Reply 'yes' to proceed, or describe any changes."}}
 
 User: "show blue zone"
 Response: {{"mode":"single","user_text":"show Zone Blue","technical":"show_Zone_Blue"}}
 
 User: "open grid, create table in A5 to E12 and make green borders"
-Response: {{"mode":"multi","steps":[{{"n":1,"command":"open Grids Spot","function":"open_Grids_Tab","description":"Open the Grids tab"}},{{"n":2,"command":"open Table","function":"open_Table","description":"Open the table creator"}},{{"n":3,"command":"Goto Range","function":"goto_Range","description":"Select the range A5:E12"}},{{"n":4,"command":"set Borders","function":"set_Cell_Borders","description":"Apply borders (green)"}}],"confirmation_message":"Please confirm this sequence is correct. Reply 'yes' to proceed, or describe any changes."}}
-(Note: include the range in the function call when emitting: goto_Range(A5:E12))
+Response: {{"mode":"multi","steps":[{{"n":1,"command":"New Grid","function":"create_Grid","description":"Create a new grid"}},{{"n":2,"command":"Goto Range","function":"goto_Range(A5:E12)","description":"Select the range A5:E12"}},{{"n":3,"command":"open Table","function":"open_Table","description":"Open / create a table in the selected range"}},{{"n":4,"command":"apply Borders","function":"set_Cell_Borders","description":"Apply borders (green) to the selected cells"}}],"confirmation_message":"Please confirm this sequence is correct. Reply 'yes' to proceed, or describe any changes."}}
 
 User: "delete column C"
 Response: {{"mode":"multi","steps":[{{"n":1,"command":"Goto Range","function":"goto_Range(C1)","description":"Navigate to column C"}},{{"n":2,"command":"delete Column","function":"delete_Column_Selected","description":"Delete the selected column"}}],"confirmation_message":"Please confirm this sequence is correct. Reply 'yes' to proceed, or describe any changes."}}
@@ -625,7 +630,7 @@ async def chat(request: ChatRequest):
             )
 
         if mode == "clarify":
-            question = parsed.get("question", "Could you clarify your request?")
+            question = parsed.get("question", "There is no such a command. Please clarify more about your desire.")
             raw_sugs = parsed.get("suggestions", []) or []
             suggestions = [
                 ClarifySuggestion(
@@ -635,6 +640,10 @@ async def chat(request: ChatRequest):
                 )
                 for s in raw_sugs
             ]
+            # If the LLM provided no suggestions AND RAG retrieval was weak (top score is low),
+            # use the exact friendly fallback message the user requested.
+            if not suggestions and (not relevant_commands or relevant_commands[0]["relevance_score"] < AMBIGUITY_THRESHOLD):
+                question = "There is no such a command. Please clarify more about your desire."
             assistant_msg = ChatMessage(
                 session_id=session_id,
                 role="assistant",
