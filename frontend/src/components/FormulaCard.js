@@ -3,7 +3,7 @@ import { Copy, Check, Terminal, AlertCircle, Code } from "lucide-react";
 import { Button } from "./ui/button";
 import { toast } from "sonner";
 
-const FormulaCard = ({ userText, technical, isError }) => {
+const FormulaCard = ({ userText, technical, isError, steps }) => {
   const [copiedUser, setCopiedUser] = useState(false);
   const [copiedTech, setCopiedTech] = useState(false);
 
@@ -135,8 +135,43 @@ const FormulaCard = ({ userText, technical, isError }) => {
           <div className="absolute bottom-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-emerald-500/30 to-transparent" />
         </div>
 
-        {/* Command breakdown */}
-        {userText && userText.includes(".") && (
+        {/* Numbered execution list — preferred when backend supplies structured steps */}
+        {Array.isArray(steps) && steps.length > 0 ? (
+          <div className="mt-3 space-y-2" data-testid="execution-steps-numbered">
+            <span className="text-xs text-zinc-500 uppercase tracking-wider">
+              Execution Steps:
+            </span>
+            <ol className="space-y-1.5">
+              {steps.map((s) => (
+                <li
+                  key={s.n}
+                  data-testid={`execution-step-${s.n}`}
+                  className="flex items-start gap-3 px-3 py-2 rounded-lg bg-zinc-800/40 border border-zinc-700/40"
+                >
+                  <span className="mt-0.5 w-6 h-6 shrink-0 rounded-full bg-blue-500/20 text-blue-400 text-[11px] font-semibold flex items-center justify-center font-mono">
+                    {s.n}
+                  </span>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex flex-wrap items-baseline gap-x-2">
+                      <code className="font-mono text-sm text-blue-300 break-all">
+                        {s.command}
+                      </code>
+                      <span className="text-zinc-600 text-xs">→</span>
+                      <code className="font-mono text-sm text-emerald-300 break-all">
+                        {s.function}
+                      </code>
+                    </div>
+                    {s.description ? (
+                      <p className="text-[11px] text-zinc-500 mt-0.5">
+                        {s.description}
+                      </p>
+                    ) : null}
+                  </div>
+                </li>
+              ))}
+            </ol>
+          </div>
+        ) : userText && userText.includes(".") ? (
           <div className="mt-3 space-y-2">
             <span className="text-xs text-zinc-500 uppercase tracking-wider">Execution Steps:</span>
             <div className="flex flex-wrap gap-2">
@@ -159,7 +194,7 @@ const FormulaCard = ({ userText, technical, isError }) => {
               })}
             </div>
           </div>
-        )}
+        ) : null}
       </div>
     </div>
   );

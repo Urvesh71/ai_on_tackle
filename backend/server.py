@@ -3,10 +3,11 @@ from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 import os
+import re
 import logging
 from pathlib import Path
 from pydantic import BaseModel, Field, ConfigDict
-from typing import List, Optional
+from typing import List, Optional, Any
 import uuid
 from datetime import datetime, timezone
 import ollama
@@ -35,6 +36,27 @@ app = FastAPI()
 # Create a router with the /api prefix
 api_router = APIRouter(prefix="/api")
 
+# RAG ambiguity threshold — if top-1 similarity < this, we flag the request as ambiguous
+AMBIGUITY_THRESHOLD = 0.40
+
+# Phrases that indicate the user is confirming a previously proposed plan
+CONFIRM_RE = re.compile(
+    r"^\s*("
+    r"y|yes|yeah|yep|yup|ya|ok|okay|k|kk|sure|alright|fine|"
+    r"confirm|confirmed|proceed|go|go ahead|do it|execute|run it|run|"
+    r"approved|approve|correct|right|that.?s correct|that.?s right|"
+    r"sounds good|looks good|perfect|great|done"
+    r")"
+    r"[\s\.\!\,\?]*$",
+    re.IGNORECASE,
+)
+
+
+def is_confirmation(text: str) -> bool:
+    """Return True if the user's message is a simple confirmation like 'yes', 'ok'."""
+    return bool(CONFIRM_RE.match(text.strip()))
+
+
 # Initialize RAG vector store on startup
 @app.on_event("startup")
 async def startup_event():
@@ -44,75 +66,117 @@ async def startup_event():
     logger.info(f"RAG vector store initialized with {count} commands")
 
 
-def build_rag_prompt(relevant_commands: list[dict]) -> str:
-    """Build the system prompt with only relevant commands (RAG approach)"""
-    
-    commands_text = "\n".join([
-        f'- "{cmd["command_name"]}" -> {cmd["technical_function"]}'
-        for cmd in relevant_commands
-    ])
-    
-    return f"""You are a command interpreter for a spreadsheet-like application called Kyra Tackle Box. Your job is to analyze user requests and map them to commands, returning both the user-friendly command names and their technical function names.
+def build_rag_prompt(
+    relevant_commands: list[dict],
+    ambiguous: bool = False,
+    pending_plan: Optional[dict] = None,
+) -> str:
+    """Build the system prompt with retrieved commands and instructions for the
+    three response modes: single, multi, clarify.
+    """
+
+    commands_text = "\n".join(
+        [
+            f'- "{cmd["command_name"]}" -> {cmd["technical_function"]}'
+            for cmd in relevant_commands
+        ]
+    )
+
+    ambiguity_hint = ""
+    if ambiguous:
+        ambiguity_hint = (
+            "\nNOTE: The retrieval system has LOW CONFIDENCE that any of the above "
+            "commands match the user's request (possible typo or vague phrasing). "
+            "Strongly prefer 'clarify' mode and ask the user to pick from suggestions.\n"
+        )
+
+    plan_context = ""
+    if pending_plan:
+        prior_steps = "\n".join(
+            [
+                f'  {s["n"]}. "{s["command"]}" -> {s["function"]}'
+                for s in pending_plan.get("steps", [])
+            ]
+        )
+        plan_context = (
+            "\nCONTEXT — A plan was previously proposed to this user (they have NOT confirmed it yet):\n"
+            f'Original request: "{pending_plan.get("original_request","")}"\n'
+            f"Proposed steps:\n{prior_steps}\n"
+            "The user's NEW message may be: (a) a modification request ('swap step 2 and 3', "
+            "'remove step 1', 'change borders to red'), or (b) a completely new request. "
+            "If it is a modification, return an UPDATED 'multi' plan reflecting the change. "
+            "If it is a new unrelated request, treat it as fresh.\n"
+        )
+
+    return f"""You are a command interpreter for a spreadsheet-like application called Kyra Tackle Box. Your job is to analyze user requests and map them to commands.
 
 RELEVANT COMMANDS FOR THIS QUERY (retrieved via semantic search):
 {commands_text}
+{ambiguity_hint}{plan_context}
 
-IMPORTANT RULES:
-1. ONLY use commands from the RELEVANT COMMANDS list above. Never invent new commands or function names.
-2. The "user_text" must use the EXACT command name (left side, e.g., "delete Column") from the list.
-3. The "technical" must use the EXACT technical function name (right side, e.g., "delete_Column_Selected") from the list.
-4. If a command involves a specific cell, column, or range, use the "Goto Range" command FIRST with the cell reference in parentheses.
-5. Return your response in this EXACT JSON format:
-   {{"user_text": "Command1.Command2", "technical": "function1.function2"}}
-6. Use the dot (.) as delimiter between commands.
-7. Return ONLY the JSON object, nothing else.
+You MUST respond with exactly ONE of the three JSON shapes below. Return ONLY the JSON object, nothing else.
 
-CELL/RANGE HANDLING RULES:
-- For operations on specific cells/columns/rows, ALWAYS start with "Goto Range(cell_reference)"
-- Cell reference format: Goto Range(B3), Goto Range(C19), Goto Range(A1:A10), etc.
-- The "Goto Range" command navigates to the cell, then the next command operates on it.
-- The technical function for "Goto Range" is "goto_Range".
+================================================================
+MODE 1 — "single": The user's request maps to EXACTLY ONE command (one action, no cell reference required).
+================================================================
+JSON shape:
+{{"mode":"single","user_text":"<command name>","technical":"<technical function>"}}
 
-EXAMPLES WITH CELL REFERENCES:
+Use this when the request is unambiguous and is a single atomic action.
 
-- User: "delete column C"
-  → Navigate to column C, then delete column
-  Response: {{"user_text": "Goto Range(C1).delete Column", "technical": "goto_Range(C1).delete_Column_Selected"}}
+================================================================
+MODE 2 — "multi": The user's request maps to TWO OR MORE commands, OR involves a cell/range navigation followed by another action.
+================================================================
+JSON shape:
+{{"mode":"multi","steps":[
+  {{"n":1,"command":"<command name>","function":"<technical function>","description":"<short human description>"}},
+  {{"n":2,"command":"<command name>","function":"<technical function>","description":"<short human description>"}}
+],"confirmation_message":"Please confirm this sequence is correct. Reply 'yes' to proceed, or describe any changes."}}
 
-- User: "add a row between C19 and C20"
-  → Navigate to C19, then add row (row is inserted below)
-  Response: {{"user_text": "Goto Range(C19).Add Row", "technical": "goto_Range(C19).add_Row_Below"}}
+CRITICAL RULES for multi:
+- Use "Goto Range(<cell_or_range>)" → "goto_Range(<cell_or_range>)" whenever a specific cell, column or range is involved (e.g., A5:E12, B1, C19). This step always comes BEFORE the action that operates on it.
+- Each step's "command" must be the EXACT command name from the RELEVANT COMMANDS list.
+- Each step's "function" must be the EXACT technical function from the list.
+- Step ordering must match the order the user described.
+- Always include the confirmation_message field exactly as shown.
 
-- User: "go to cell B3 and add a row"
-  Response: {{"user_text": "Goto Range(B3).Add Row", "technical": "goto_Range(B3).add_Row_Below"}}
+================================================================
+MODE 3 — "clarify": The request has a typo, is ambiguous, or none of the relevant commands clearly match.
+================================================================
+JSON shape:
+{{"mode":"clarify","question":"<friendly question asking for clarification>","suggestions":[
+  {{"command":"<command name>","function":"<technical function>","why":"<one-line reason this might be what they meant>"}}
+]}}
 
-- User: "hide column F"
-  Response: {{"user_text": "Goto Range(F1).hide Column", "technical": "goto_Range(F1).hide_Column_Selected"}}
+Use this when:
+- The user's text contains an obvious typo (e.g., "delte coolum")
+- The request is vague or could mean multiple different commands
+- None of the RELEVANT COMMANDS confidently matches
 
-- User: "delete rows 5 to 10"
-  Response: {{"user_text": "Goto Range(A5:A10).Delete Row", "technical": "goto_Range(A5:A10).delete_Row_Selected"}}
+Include 2–4 suggestions ranked from most-likely to least-likely.
 
-- User: "make cell A1 bold"
-  Response: {{"user_text": "Goto Range(A1).apply Bold", "technical": "goto_Range(A1).apply_Format_Bold"}}
+================================================================
+EXAMPLES
+================================================================
 
-- User: "sort column B ascending"
-  Response: {{"user_text": "Goto Range(B1).sort A Z", "technical": "goto_Range(B1).sort_Ascending"}}
+User: "copy and paste"
+Response: {{"mode":"multi","steps":[{{"n":1,"command":"Copy","function":"copy_Selection","description":"Copy the current selection"}},{{"n":2,"command":"Paste","function":"paste_Clipboard_Content","description":"Paste the clipboard content"}}],"confirmation_message":"Please confirm this sequence is correct. Reply 'yes' to proceed, or describe any changes."}}
 
-EXAMPLES WITHOUT CELL REFERENCES:
+User: "show blue zone"
+Response: {{"mode":"single","user_text":"show Zone Blue","technical":"show_Zone_Blue"}}
 
-- User: "open grids, open table, apply borders"
-  Response: {{"user_text": "open Grids Spot.open Table.set Borders", "technical": "open_Grids_Tab.open_Table.set_Cell_Borders"}}
+User: "open grid, create table in A5 to E12 and make green borders"
+Response: {{"mode":"multi","steps":[{{"n":1,"command":"open Grids Spot","function":"open_Grids_Tab","description":"Open the Grids tab"}},{{"n":2,"command":"open Table","function":"open_Table","description":"Open the table creator"}},{{"n":3,"command":"Goto Range","function":"goto_Range","description":"Select the range A5:E12"}},{{"n":4,"command":"set Borders","function":"set_Cell_Borders","description":"Apply borders (green)"}}],"confirmation_message":"Please confirm this sequence is correct. Reply 'yes' to proceed, or describe any changes."}}
+(Note: include the range in the function call when emitting: goto_Range(A5:E12))
 
-- User: "copy and paste"
-  Response: {{"user_text": "Copy.Paste", "technical": "copy_Selection.paste_Clipboard_Content"}}
+User: "delete column C"
+Response: {{"mode":"multi","steps":[{{"n":1,"command":"Goto Range","function":"goto_Range(C1)","description":"Navigate to column C"}},{{"n":2,"command":"delete Column","function":"delete_Column_Selected","description":"Delete the selected column"}}],"confirmation_message":"Please confirm this sequence is correct. Reply 'yes' to proceed, or describe any changes."}}
 
-- User: "show blue zone"
-  Response: {{"user_text": "show Zone Blue", "technical": "show_Zone_Blue"}}
+User: "delte coolum"
+Response: {{"mode":"clarify","question":"I'm not sure what you meant. Did you want to:","suggestions":[{{"command":"delete Column","function":"delete_Column_Selected","why":"Closest match to 'delte coolum'"}},{{"command":"delete Row","function":"delete_Row_Selected","why":"You may have meant a row instead"}}]}}
 
-- User: "open grids tab"
-  Response: {{"user_text": "open Grids Spot", "technical": "open_Grids_Tab"}}
-
-If the user's request doesn't match any command in the list, respond with: {{"user_text": "UNKNOWN_COMMAND", "technical": "UNKNOWN_COMMAND"}}"""
+If nothing matches at all, return: {{"mode":"clarify","question":"I couldn't match your request to any known command. Could you rephrase?","suggestions":[]}}
+"""
 
 
 # Define Models
@@ -138,12 +202,101 @@ class ChatRequest(BaseModel):
     message: str
     session_id: Optional[str] = None
 
+
+class PlanStep(BaseModel):
+    n: int
+    command: str
+    function: str
+    description: Optional[str] = ""
+
+
+class ClarifySuggestion(BaseModel):
+    command: str
+    function: str
+    why: Optional[str] = ""
+
+
 class ChatResponse(BaseModel):
-    user_text: str
-    technical: str
+    """Unified response shape supporting all three modes.
+
+    mode == "answer"   → user_text + technical (single or executed multi)
+    mode == "plan"     → steps + confirmation_message
+    mode == "clarify"  → question + suggestions
+    """
+    mode: str  # "answer" | "plan" | "clarify"
     session_id: str
     message_id: str
-    retrieved_commands: Optional[List[dict]] = None  # Show which commands were retrieved
+
+    # answer mode
+    user_text: Optional[str] = None
+    technical: Optional[str] = None
+    steps: Optional[List[PlanStep]] = None  # numbered list (also returned on answer-from-multi)
+
+    # plan mode
+    confirmation_message: Optional[str] = None
+
+    # clarify mode
+    question: Optional[str] = None
+    suggestions: Optional[List[ClarifySuggestion]] = None
+
+    # debug
+    retrieved_commands: Optional[List[dict]] = None
+
+
+# ---------- Pending plan persistence ----------
+async def get_pending_plan(session_id: str) -> Optional[dict]:
+    return await db.pending_plans.find_one({"session_id": session_id}, {"_id": 0})
+
+
+async def save_pending_plan(session_id: str, steps: List[dict], original_request: str):
+    await db.pending_plans.update_one(
+        {"session_id": session_id},
+        {
+            "$set": {
+                "session_id": session_id,
+                "steps": steps,
+                "original_request": original_request,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            }
+        },
+        upsert=True,
+    )
+
+
+async def clear_pending_plan(session_id: str):
+    await db.pending_plans.delete_one({"session_id": session_id})
+
+
+def call_ollama(system_prompt: str, user_message: str, ollama_host: str) -> dict:
+    """Call Ollama and parse the JSON object out of the response."""
+    oclient = ollama.Client(host=ollama_host)
+    response = oclient.chat(
+        model='llama3.1:8b',
+        messages=[
+            {'role': 'system', 'content': system_prompt},
+            {'role': 'user', 'content': user_message},
+        ],
+    )
+    text = response['message']['content'].strip()
+
+    # Strip markdown fences if present
+    if text.startswith("```"):
+        lines = text.split("\n")
+        text = "\n".join(lines[1:-1] if lines and lines[-1].strip() == "```" else lines[1:])
+        text = text.strip()
+
+    # Extract first {...} block to be resilient against extra prose
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        match = re.search(r"\{.*\}", text, re.DOTALL)
+        if match:
+            try:
+                return json.loads(match.group(0))
+            except json.JSONDecodeError:
+                pass
+    # Fallback — wrap raw text
+    return {"mode": "clarify", "question": text or "Sorry, I couldn't understand that.", "suggestions": []}
 
 
 # Add your routes to the router instead of directly to app
@@ -170,84 +323,180 @@ async def get_status_checks():
 
 @api_router.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
-    """Process user message using RAG to retrieve relevant commands"""
+    """Process user message with multi-turn planning + confirmation flow."""
     try:
         session_id = request.session_id or str(uuid.uuid4())
-        
-        # Get Ollama host from env or use default
         ollama_host = os.environ.get('OLLAMA_HOST', 'http://localhost:11434')
-        
-        # RAG Step 1: Retrieve relevant commands using semantic search
-        logger.info(f"Retrieving relevant commands for: {request.message}")
-        relevant_commands = retrieve_relevant_commands(request.message, top_k=15)
-        logger.info(f"Retrieved {len(relevant_commands)} relevant commands")
-        
-        # RAG Step 2: Build prompt with only relevant commands
-        system_prompt = build_rag_prompt(relevant_commands)
-        
-        # RAG Step 3: Generate response using Ollama with llama3.1:8b
-        client = ollama.Client(host=ollama_host)
-        
-        response = client.chat(
-            model='llama3.1:8b',
-            messages=[
-                {'role': 'system', 'content': system_prompt},
-                {'role': 'user', 'content': request.message}
-            ]
-        )
-        
-        response_text = response['message']['content'].strip()
-        
-        # Remove markdown code blocks if present
-        if response_text.startswith("```"):
-            lines = response_text.split("\n")
-            response_text = "\n".join(lines[1:-1] if lines[-1] == "```" else lines[1:])
-            response_text = response_text.strip()
-        
-        # Parse the JSON response
-        try:
-            parsed = json.loads(response_text)
-            user_text = parsed.get("user_text", "UNKNOWN_COMMAND")
-            technical = parsed.get("technical", "UNKNOWN_COMMAND")
-        except json.JSONDecodeError:
-            user_text = response_text
-            technical = response_text
-        
-        # Store user message
-        user_msg = ChatMessage(
-            session_id=session_id,
-            role="user",
-            content=request.message
-        )
+
+        # Persist user message immediately
+        user_msg = ChatMessage(session_id=session_id, role="user", content=request.message)
         user_doc = user_msg.model_dump()
         user_doc['timestamp'] = user_doc['timestamp'].isoformat()
         await db.chat_messages.insert_one(user_doc)
-        
-        # Store assistant response
+
+        # ----- 1) Confirmation path: user is approving a previously proposed plan -----
+        pending = await get_pending_plan(session_id)
+        if pending and is_confirmation(request.message):
+            steps = pending.get("steps", [])
+            user_text_combined = ".".join([s["command"] for s in steps])
+            technical_combined = ".".join([s["function"] for s in steps])
+
+            assistant_msg = ChatMessage(
+                session_id=session_id,
+                role="assistant",
+                content=f"{user_text_combined}|{technical_combined}",
+                formula=user_text_combined,
+            )
+            doc = assistant_msg.model_dump()
+            doc['timestamp'] = doc['timestamp'].isoformat()
+            await db.chat_messages.insert_one(doc)
+            await clear_pending_plan(session_id)
+
+            return ChatResponse(
+                mode="answer",
+                session_id=session_id,
+                message_id=assistant_msg.id,
+                user_text=user_text_combined,
+                technical=technical_combined,
+                steps=[PlanStep(**s) for s in steps],
+            )
+
+        # ----- 2) Fresh request (or modification of an existing plan) -----
+        logger.info(f"Retrieving relevant commands for: {request.message}")
+        relevant_commands = retrieve_relevant_commands(request.message, top_k=15)
+        logger.info(f"Retrieved {len(relevant_commands)} relevant commands")
+
+        top_score = relevant_commands[0]["relevance_score"] if relevant_commands else 0.0
+        ambiguous = top_score < AMBIGUITY_THRESHOLD
+
+        system_prompt = build_rag_prompt(
+            relevant_commands=relevant_commands,
+            ambiguous=ambiguous,
+            pending_plan=pending,  # may be None
+        )
+
+        parsed = call_ollama(system_prompt, request.message, ollama_host)
+        mode = (parsed.get("mode") or "").lower()
+
+        retrieved_for_display = [
+            {
+                "name": cmd["command_name"],
+                "function": cmd["technical_function"],
+                "score": round(cmd["relevance_score"], 3),
+            }
+            for cmd in relevant_commands[:5]
+        ]
+
+        # ----- 3) Route by mode -----
+        if mode == "single":
+            user_text = parsed.get("user_text", "UNKNOWN_COMMAND")
+            technical = parsed.get("technical", "UNKNOWN_COMMAND")
+            assistant_msg = ChatMessage(
+                session_id=session_id,
+                role="assistant",
+                content=f"{user_text}|{technical}",
+                formula=user_text,
+            )
+            doc = assistant_msg.model_dump()
+            doc['timestamp'] = doc['timestamp'].isoformat()
+            await db.chat_messages.insert_one(doc)
+            await clear_pending_plan(session_id)
+            return ChatResponse(
+                mode="answer",
+                session_id=session_id,
+                message_id=assistant_msg.id,
+                user_text=user_text,
+                technical=technical,
+                retrieved_commands=retrieved_for_display,
+            )
+
+        if mode == "multi":
+            raw_steps = parsed.get("steps", []) or []
+            steps_clean: List[dict] = []
+            for i, s in enumerate(raw_steps, start=1):
+                steps_clean.append({
+                    "n": int(s.get("n") or i),
+                    "command": str(s.get("command", "")).strip(),
+                    "function": str(s.get("function", "")).strip(),
+                    "description": str(s.get("description", "")).strip(),
+                })
+            confirmation_message = parsed.get(
+                "confirmation_message",
+                "Please confirm this sequence is correct. Reply 'yes' to proceed, or describe any changes."
+            )
+
+            # Persist the plan for this session
+            await save_pending_plan(session_id, steps_clean, request.message)
+
+            # Log the proposal as an assistant message
+            preview = "; ".join([f'{s["n"]}.{s["command"]}' for s in steps_clean])
+            assistant_msg = ChatMessage(
+                session_id=session_id,
+                role="assistant",
+                content=f"[PLAN] {preview}",
+                formula=None,
+            )
+            doc = assistant_msg.model_dump()
+            doc['timestamp'] = doc['timestamp'].isoformat()
+            await db.chat_messages.insert_one(doc)
+
+            return ChatResponse(
+                mode="plan",
+                session_id=session_id,
+                message_id=assistant_msg.id,
+                steps=[PlanStep(**s) for s in steps_clean],
+                confirmation_message=confirmation_message,
+                retrieved_commands=retrieved_for_display,
+            )
+
+        if mode == "clarify":
+            question = parsed.get("question", "Could you clarify your request?")
+            raw_sugs = parsed.get("suggestions", []) or []
+            suggestions = [
+                ClarifySuggestion(
+                    command=str(s.get("command", "")).strip(),
+                    function=str(s.get("function", "")).strip(),
+                    why=str(s.get("why", "")).strip(),
+                )
+                for s in raw_sugs
+            ]
+            assistant_msg = ChatMessage(
+                session_id=session_id,
+                role="assistant",
+                content=f"[CLARIFY] {question}",
+                formula=None,
+            )
+            doc = assistant_msg.model_dump()
+            doc['timestamp'] = doc['timestamp'].isoformat()
+            await db.chat_messages.insert_one(doc)
+            # Do NOT clear pending_plan — the user may still respond to the prior plan
+            return ChatResponse(
+                mode="clarify",
+                session_id=session_id,
+                message_id=assistant_msg.id,
+                question=question,
+                suggestions=suggestions,
+                retrieved_commands=retrieved_for_display,
+            )
+
+        # Unknown mode — fall back to clarify
         assistant_msg = ChatMessage(
             session_id=session_id,
             role="assistant",
-            content=f"{user_text}|{technical}",
-            formula=user_text
+            content="[CLARIFY] I couldn't understand the response. Please rephrase.",
+            formula=None,
         )
-        assistant_doc = assistant_msg.model_dump()
-        assistant_doc['timestamp'] = assistant_doc['timestamp'].isoformat()
-        await db.chat_messages.insert_one(assistant_doc)
-        
-        # Format retrieved commands for response (top 5 for display)
-        retrieved_for_display = [
-            {"name": cmd["command_name"], "function": cmd["technical_function"], "score": round(cmd["relevance_score"], 3)}
-            for cmd in relevant_commands[:5]
-        ]
-        
+        doc = assistant_msg.model_dump()
+        doc['timestamp'] = doc['timestamp'].isoformat()
+        await db.chat_messages.insert_one(doc)
         return ChatResponse(
-            user_text=user_text,
-            technical=technical,
+            mode="clarify",
             session_id=session_id,
             message_id=assistant_msg.id,
-            retrieved_commands=retrieved_for_display
+            question="I couldn't understand that. Could you rephrase?",
+            suggestions=[],
         )
-        
+
     except Exception as e:
         logger.error(f"Chat error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -288,7 +537,8 @@ async def get_rag_stats():
         "retrieval_top_k": 15,
         "llm_provider": "Ollama",
         "llm_model": "llama3.1:8b",
-        "ollama_host": ollama_host
+        "ollama_host": ollama_host,
+        "ambiguity_threshold": AMBIGUITY_THRESHOLD,
     }
 
 
