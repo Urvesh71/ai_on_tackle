@@ -140,6 +140,18 @@ CRITICAL RULES for multi:
 - Step ordering must match the order the user described.
 - Always include the confirmation_message field exactly as shown.
 
+ACTION-COUNTING RULE (very important):
+- Count the DISTINCT actions/verbs in the user's request. They are typically separated by commas (","), the word "and", the word "then", or the symbol "+".
+- Your "steps" list MUST contain AT LEAST that many action steps (plus extra "Goto Range" steps for cell navigation when required).
+- NEVER merge two distinct user actions into one step, even if they look related.
+- Example: "open grid, create table, apply borders" = 3 distinct actions → at least 3 steps.
+
+DISAMBIGUATION HINTS (apply these specifically):
+- "create table" or "new table" or "make a table" → emit the `open Table` step (function `open_Table`). DO NOT collapse it into `New Grid`. A grid is a container; a table is a separate object inside it.
+- "open grid" or "go to grids" or "show grids" → emit `open Grids Spot` (function `open_Grids_Tab`). DO NOT use `New Grid` unless the user explicitly says "create grid" or "new grid".
+- "create grid" or "new grid" → use `New Grid` (function `create_Grid`).
+- "select range X:Y" or operations on a specific cell/range → use `Goto Range(X:Y)` (function `goto_Range(X:Y)`) BEFORE the action.
+
 ================================================================
 MODE 3 — "clarify": The request has a typo, is ambiguous, or none of the relevant commands clearly match.
 ================================================================
@@ -161,6 +173,10 @@ EXAMPLES
 
 User: "copy and paste"
 Response: {{"mode":"multi","steps":[{{"n":1,"command":"Copy","function":"copy_Selection","description":"Copy the current selection"}},{{"n":2,"command":"Paste","function":"paste_Clipboard_Content","description":"Paste the clipboard content"}}],"confirmation_message":"Please confirm this sequence is correct. Reply 'yes' to proceed, or describe any changes."}}
+
+User: "open grid, create table, apply borders"
+(3 distinct actions, no cell reference → 3 steps. NOTE: "create table" means `open Table`, NOT `New Grid`.)
+Response: {{"mode":"multi","steps":[{{"n":1,"command":"open Grids Spot","function":"open_Grids_Tab","description":"Open the Grids tab"}},{{"n":2,"command":"open Table","function":"open_Table","description":"Open / create a table"}},{{"n":3,"command":"apply Borders","function":"set_Cell_Borders","description":"Apply borders to the cells"}}],"confirmation_message":"Please confirm this sequence is correct. Reply 'yes' to proceed, or describe any changes."}}
 
 User: "show blue zone"
 Response: {{"mode":"single","user_text":"show Zone Blue","technical":"show_Zone_Blue"}}
