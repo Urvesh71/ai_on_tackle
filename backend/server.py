@@ -77,6 +77,25 @@ def _bare_function(fn: str) -> str:
     return re.sub(r"\(.*\)\s*$", "", (fn or "").strip())
 
 
+# Phrases that ALWAYS mean ambiguous-grid (standalone usage triggers clarify)
+AMBIGUOUS_GRID_RE = re.compile(
+    r"^\s*(please\s+|pls\s+)?"
+    r"(create|make|new|open|add)\s+"
+    r"(a\s+)?(new\s+)?grid"
+    r"\s*[\.\!]?\s*$",
+    re.IGNORECASE,
+)
+
+
+def is_ambiguous_grid_phrase(text: str) -> bool:
+    """True if the user's message is a STANDALONE ambiguous grid request like
+    'create grid', 'open grid', 'new grid', 'make a new grid', etc.
+    (Used as a server-side pre-check before the LLM, so 8B-class models
+    cannot miss the rule.)
+    """
+    return bool(AMBIGUOUS_GRID_RE.match(text.strip()))
+
+
 def validate_plan_steps(steps: List[dict]) -> tuple[List[dict], List[dict]]:
     """Validate each step's function exists in the loaded commands catalog.
 
@@ -357,8 +376,9 @@ async def clear_pending_plan(session_id: str):
 def call_ollama(system_prompt: str, user_message: str, ollama_host: str) -> dict:
     """Call Ollama and parse the JSON object out of the response."""
     oclient = ollama.Client(host=ollama_host)
+    model_name = os.environ.get('OLLAMA_MODEL', 'llama3.1:8b')
     response = oclient.chat(
-        model='llama3.1:8b',
+        model=model_name,
         messages=[
             {'role': 'system', 'content': system_prompt},
             {'role': 'user', 'content': user_message},
@@ -449,6 +469,41 @@ async def chat(request: ChatRequest):
             )
 
         # ----- 2) Fresh request (or modification of an existing plan) -----
+        # ---- 2a) Hard-coded ambiguity pre-check for standalone "create grid" / "open grid" ----
+        # 8B-class models can miss subtle prompt rules. Intercept here so the
+        # clarify question ALWAYS fires for these specific standalone phrases.
+        if is_ambiguous_grid_phrase(request.message):
+            question = "Do you need to navigate to the Grids tab first, or just create a new grid in the current view?"
+            suggestions = [
+                ClarifySuggestion(
+                    command="open Grids Spot then New Grid",
+                    function="open_Grids_Tab.create_Grid",
+                    why="Navigate to the Grids tab first, then create a new grid.",
+                ),
+                ClarifySuggestion(
+                    command="New Grid",
+                    function="create_Grid",
+                    why="Just create a new grid in the current view.",
+                ),
+            ]
+            await clear_pending_plan(session_id)
+            assistant_msg = ChatMessage(
+                session_id=session_id,
+                role="assistant",
+                content=f"[CLARIFY] {question}",
+                formula=None,
+            )
+            doc = assistant_msg.model_dump()
+            doc['timestamp'] = doc['timestamp'].isoformat()
+            await db.chat_messages.insert_one(doc)
+            return ChatResponse(
+                mode="clarify",
+                session_id=session_id,
+                message_id=assistant_msg.id,
+                question=question,
+                suggestions=suggestions,
+            )
+
         logger.info(f"Retrieving relevant commands for: {request.message}")
         relevant_commands = retrieve_relevant_commands(request.message, top_k=15)
         logger.info(f"Retrieved {len(relevant_commands)} relevant commands")
@@ -481,40 +536,54 @@ async def chat(request: ChatRequest):
 
             # Validate the single function is in the catalog (no hallucination)
             bare = _bare_function(technical)
-            catalog_funcs = set(get_all_commands().values())
-            if not bare or bare not in catalog_funcs:
-                # Fall back to clarify with suggestions from RAG
-                suggestions = [
-                    ClarifySuggestion(
-                        command=cmd["command_name"],
-                        function=cmd["technical_function"],
-                        why=f"Available command (RAG score {round(cmd['relevance_score'], 2)})",
+            catalog = get_all_commands()
+            catalog_funcs = set(catalog.values())
+            catalog_names = set(catalog.keys())
+            bare_user_text = _bare_function(user_text)
+            if (not bare or bare not in catalog_funcs) or (bare_user_text and bare_user_text not in catalog_names):
+                # Either function is fake OR command name doesn't match catalog exactly.
+                # Try to auto-correct: find the catalog entry whose function matches bare,
+                # and use its EXACT left-side name as user_text.
+                fixed = False
+                if bare and bare in catalog_funcs:
+                    for cmd_name, fn in catalog.items():
+                        if fn == bare:
+                            user_text = cmd_name + (user_text[len(bare_user_text):] if bare_user_text else "")
+                            fixed = True
+                            break
+                if not fixed:
+                    # Fall back to clarify with suggestions from RAG
+                    suggestions = [
+                        ClarifySuggestion(
+                            command=cmd["command_name"],
+                            function=cmd["technical_function"],
+                            why=f"Available command (RAG score {round(cmd['relevance_score'], 2)})",
+                        )
+                        for cmd in relevant_commands[:5]
+                    ]
+                    question = (
+                        f"I couldn't reliably map your request to a known command "
+                        f"(the model suggested \"{technical}\" which doesn't exist in the catalog). "
+                        "Could you pick from the suggestions below or rephrase?"
                     )
-                    for cmd in relevant_commands[:5]
-                ]
-                question = (
-                    f"I couldn't reliably map your request to a known command "
-                    f"(the model suggested \"{technical}\" which doesn't exist in the catalog). "
-                    "Could you pick from the suggestions below or rephrase?"
-                )
-                await clear_pending_plan(session_id)
-                assistant_msg = ChatMessage(
-                    session_id=session_id,
-                    role="assistant",
-                    content=f"[CLARIFY] {question}",
-                    formula=None,
-                )
-                doc = assistant_msg.model_dump()
-                doc['timestamp'] = doc['timestamp'].isoformat()
-                await db.chat_messages.insert_one(doc)
-                return ChatResponse(
-                    mode="clarify",
-                    session_id=session_id,
-                    message_id=assistant_msg.id,
-                    question=question,
-                    suggestions=suggestions,
-                    retrieved_commands=retrieved_for_display,
-                )
+                    await clear_pending_plan(session_id)
+                    assistant_msg = ChatMessage(
+                        session_id=session_id,
+                        role="assistant",
+                        content=f"[CLARIFY] {question}",
+                        formula=None,
+                    )
+                    doc = assistant_msg.model_dump()
+                    doc['timestamp'] = doc['timestamp'].isoformat()
+                    await db.chat_messages.insert_one(doc)
+                    return ChatResponse(
+                        mode="clarify",
+                        session_id=session_id,
+                        message_id=assistant_msg.id,
+                        question=question,
+                        suggestions=suggestions,
+                        retrieved_commands=retrieved_for_display,
+                    )
 
             assistant_msg = ChatMessage(
                 session_id=session_id,
@@ -741,7 +810,7 @@ async def get_rag_stats():
         "vector_store": "ChromaDB (in-memory)",
         "retrieval_top_k": 15,
         "llm_provider": "Ollama",
-        "llm_model": "llama3.1:8b",
+        "llm_model": os.environ.get('OLLAMA_MODEL', 'llama3.1:8b'),
         "ollama_host": ollama_host,
         "ambiguity_threshold": AMBIGUITY_THRESHOLD,
     }
