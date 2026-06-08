@@ -185,10 +185,20 @@ ACTION-COUNTING RULE (very important):
 - Example: "open grid, create table, apply borders" = 3 distinct actions → at least 3 action steps (and 1 implicit `Goto Range(Selection)` step before the first selection-based action — see RANGE INFERENCE below).
 
 DISAMBIGUATION HINTS:
-- "open grid" / "create grid" / "new grid" → use `New Grid` → `create_Grid`. (Use this when the user wants to start a new working grid; this is the common case.)
-- "go to grids tab" / "show grids tab" / "switch to grids" → use `open Grids Spot` → `open_Grids_Tab` (only when the user explicitly says "tab" or wants to navigate the UI).
-- "create table" / "new table" / "make a table" / "open table" → use `open Table` → `open_Table`. Never use `New Grid` for this.
+- "open grid" / "create grid" / "new grid" → this is AMBIGUOUS. See AMBIGUITY DISAMBIGUATION rule below — you MUST ask the user whether they want to navigate to the Grids tab first.
+- "go to grids tab" / "show grids tab" / "switch to grids tab" / "open Grids Spot" → unambiguous: use `open Grids Spot` → `open_Grids_Tab`.
+- "create table" / "new table" / "make a table" → use `open Table` → `open_Table`. The `open_Table` function is the one that CREATES a table. Do NOT confuse with `New Grid`.
+- "open table NAME" / "open the table called NAME" / "open table 'NAME'" → use `open Table` → `open_Table(NAME)` with the table's name passed as a parameter, just like cell ranges are passed to `goto_Range(...)`. Quotes are stripped from NAME.
 - "apply borders" / "add borders" / "set borders" / "make borders" → use `apply Borders` (or `set Borders`) → `set_Cell_Borders`.
+
+AMBIGUITY DISAMBIGUATION rule (for "create grid" / "open grid" / "new grid"):
+- These phrases could mean EITHER (a) "Navigate to the Grids tab, then create a new grid" OR (b) "Just create a new grid in the current view". The user might have meant either.
+- When the user's request CONTAINS one of these ambiguous grid phrases as a STANDALONE first action (no other actions after it that would disambiguate it), you MUST respond in "clarify" mode asking the user which interpretation they want, with TWO suggestions:
+    1. {{"command":"open Grids Spot then New Grid","function":"open_Grids_Tab.create_Grid","why":"Navigate to the Grids tab first, then create a new grid."}}
+    2. {{"command":"New Grid","function":"create_Grid","why":"Just create a new grid in the current view."}}
+  Phrase the question as: "Do you need to navigate to the Grids tab first, or just create a new grid in the current view?"
+- HOWEVER, if the user's request includes OTHER actions after the grid phrase (e.g., "create grid, create table, apply borders"), the user clearly wants to perform a workflow. In that case, do NOT ask — proceed with `New Grid` (`create_Grid`) as the first step (the most common interpretation for a workflow).
+- EXCEPTION: If the user's request is an EXACT verbatim catalog command name (e.g., the user types "New Grid" or "open Grids Spot" literally — these are the EXACT left-side names from the RELEVANT COMMANDS list), do NOT trigger this ambiguity rule. Just emit the matching command directly in "single" or "multi" mode as appropriate. (Reason: they're echoing a suggestion you already gave them — they have already disambiguated.)
 
 RANGE INFERENCE RULE (very important):
 - Some actions inherently operate on a selection/range: applying borders, formatting (bold/italic/font/alignment), merge/unmerge, fill direction, sort, filter, table placement, deleting/hiding rows or columns, etc.
@@ -224,6 +234,17 @@ EXAMPLES
 
 User: "copy and paste"
 Response: {{"mode":"multi","steps":[{{"n":1,"command":"Copy","function":"copy_Selection","description":"Copy the current selection"}},{{"n":2,"command":"Paste","function":"paste_Clipboard_Content","description":"Paste the clipboard content"}}],"confirmation_message":"Please confirm this sequence is correct. Reply 'yes' to proceed, or describe any changes."}}
+
+User: "create grid"
+(Ambiguous standalone grid phrase → ask which interpretation.)
+Response: {{"mode":"clarify","question":"Do you need to navigate to the Grids tab first, or just create a new grid in the current view?","suggestions":[{{"command":"open Grids Spot then New Grid","function":"open_Grids_Tab.create_Grid","why":"Navigate to the Grids tab first, then create a new grid."}},{{"command":"New Grid","function":"create_Grid","why":"Just create a new grid in the current view."}}]}}
+
+User: "open table ABC"
+(User wants to open an existing table named "ABC".)
+Response: {{"mode":"single","user_text":"open Table(ABC)","technical":"open_Table(ABC)"}}
+
+User: "open the table called Sales"
+Response: {{"mode":"single","user_text":"open Table(Sales)","technical":"open_Table(Sales)"}}
 
 User: "open grid, create table, apply borders"
 (3 distinct actions, no cell reference → 4 steps with an inferred `Goto Range(Selection)`.)
