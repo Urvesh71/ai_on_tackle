@@ -5,6 +5,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 import os
 import re
 import logging
+import difflib
 from pathlib import Path
 from pydantic import BaseModel, Field, ConfigDict
 from typing import List, Optional, Any
@@ -41,7 +42,7 @@ AMBIGUITY_THRESHOLD = 0.40
 
 # Code version marker — bumped on each meaningful change so you can verify
 # which build is actually running inside your container.
-CODE_VERSION = "2026.02.07-grid-pre-check-v2"
+CODE_VERSION = "2026.02.07-typo-norm-v4"
 
 # Phrases that indicate the user is confirming a previously proposed plan
 CONFIRM_RE = re.compile(
@@ -119,14 +120,43 @@ def is_ambiguous_grid_phrase(text: str) -> bool:
 def validate_plan_steps(steps: List[dict]) -> tuple[List[dict], List[dict]]:
     """Validate each step's function exists in the loaded commands catalog.
 
+    Matching is CASE-INSENSITIVE on the function name (so `open_table` matches
+    catalog's `open_Table`). When a near-match is found with different casing,
+    the step's function is rewritten to the canonical catalog form so the user
+    sees the correct spelling.
+
     Returns (valid_steps, invalid_steps).
     """
-    catalog_funcs = set(get_all_commands().values())
+    catalog = get_all_commands()
+    # Build lookup maps once: lowercased function → canonical function/name
+    fn_lookup: dict = {}
+    name_lookup: dict = {}
+    for cmd_name, fn in catalog.items():
+        fn_lookup[fn.lower()] = (cmd_name, fn)
+        name_lookup[cmd_name.lower()] = (cmd_name, fn)
+
     valid: List[dict] = []
     invalid: List[dict] = []
     for s in steps:
-        bare = _bare_function(s.get("function", ""))
-        if bare and bare in catalog_funcs:
+        raw_fn = (s.get("function") or "").strip()
+        bare = _bare_function(raw_fn)
+        # Preserve any trailing (param) the LLM emitted
+        param_match = re.search(r"(\(.*\))\s*$", raw_fn)
+        param_suffix = param_match.group(1) if param_match else ""
+
+        # Try case-insensitive function match first
+        hit = fn_lookup.get(bare.lower()) if bare else None
+        # If function didn't match, try matching by command name (left-side)
+        if not hit:
+            cmd_name_raw = (s.get("command") or "").strip()
+            cmd_bare = _bare_function(cmd_name_raw)
+            hit = name_lookup.get(cmd_bare.lower()) if cmd_bare else None
+
+        if hit:
+            canon_name, canon_fn = hit
+            # Rewrite to canonical spelling + reattach any param suffix
+            s["command"] = canon_name
+            s["function"] = canon_fn + param_suffix
             valid.append(s)
         else:
             invalid.append(s)
@@ -394,6 +424,117 @@ async def clear_pending_plan(session_id: str):
     await db.pending_plans.delete_one({"session_id": session_id})
 
 
+def _build_typo_vocab() -> set:
+    """Build a vocabulary of every meaningful word in the command catalog plus
+    common English helper words. Used by `normalize_typos` to detect & repair
+    misspellings before RAG retrieval.
+    """
+    vocab: set = set()
+    for cmd_name, fn in get_all_commands().items():
+        for word in re.findall(r"[A-Za-z]+", cmd_name + " " + fn):
+            if len(word) >= 3:
+                vocab.add(word.lower())
+    # Common verbs/adjectives users say but that aren't in the catalog
+    vocab.update({
+        "show", "open", "create", "apply", "make", "add", "delete", "set",
+        "go", "navigate", "select", "paste", "copy", "cut", "change", "format",
+        "edit", "view", "hide", "sort", "filter", "with", "from", "the", "and",
+        "or", "then", "for", "please", "just", "kindly", "tab", "spot", "zone",
+        "table", "grid", "border", "borders", "cell", "cells", "row", "column",
+        "range", "green", "red", "blue", "black", "white", "yellow", "orange",
+        "purple", "pink", "game", "team", "player", "log", "logs",
+    })
+    return vocab
+
+
+_TYPO_VOCAB: set | None = None
+
+
+def _typo_vocab() -> set:
+    global _TYPO_VOCAB
+    if _TYPO_VOCAB is None:
+        _TYPO_VOCAB = _build_typo_vocab()
+    return _TYPO_VOCAB
+
+
+def normalize_typos(text: str, cutoff: float = 0.80) -> str:
+    """Lightweight typo correction:
+      - For each word ≥4 letters that isn't already in the catalog vocabulary,
+        try `difflib.get_close_matches` against the vocabulary.
+      - If a close match exists (similarity ≥ `cutoff`), replace the word.
+      - Otherwise leave it alone.
+    Whitespace and non-alphabetic characters are preserved.
+    """
+    vocab = _typo_vocab()
+    out_parts: List[str] = []
+    for token in re.findall(r"[A-Za-z']+|[^A-Za-z']+", text):
+        if not re.search(r"[A-Za-z]", token):
+            out_parts.append(token)
+            continue
+        pure = re.sub(r"[^A-Za-z]", "", token).lower()
+        if len(pure) < 4 or pure in vocab:
+            out_parts.append(token)
+            continue
+        matches = difflib.get_close_matches(pure, vocab, n=1, cutoff=cutoff)
+        if matches and matches[0] != pure:
+            # preserve original token's leading/trailing punctuation, replace alpha core
+            replacement = matches[0]
+            out_parts.append(re.sub(r"[A-Za-z]+", replacement, token, count=1))
+        else:
+            out_parts.append(token)
+    return "".join(out_parts)
+
+
+def retrieve_relevant_commands_multi(user_message: str, per_action: int = 8, whole_top: int = 10) -> List[dict]:
+    """Multi-action RAG retrieval.
+
+    When the user sends multiple actions in one message (e.g. "open zone, go to
+    grid spot, open table, make borders green"), a single embedding of the whole
+    sentence averages out the meaning and may miss specific commands for
+    individual actions. This helper:
+      1. Normalizes obvious typos using the catalog vocabulary (e.g., "zoone" -> "zone").
+      2. Splits the user message into action phrases.
+      3. Runs a focused RAG retrieval (top_k=per_action) for EACH action.
+      4. Also retrieves top results for the whole message (catches verbs/objects
+         that span action boundaries).
+      5. Merges the lists, deduplicates by technical_function, keeping the
+         highest relevance score per command.
+
+    Returns the merged list, sorted by relevance score (descending).
+    """
+    # Step 0: typo normalization
+    original = user_message
+    normalized = normalize_typos(user_message)
+    if normalized != original:
+        logger.info(f"[TYPO-FIX] {original!r} -> {normalized!r}")
+    user_message = normalized
+
+    actions = split_user_actions(user_message)
+    seen: dict = {}  # function -> best record
+
+    # Whole-message retrieval as a baseline
+    for cmd in retrieve_relevant_commands(user_message, top_k=whole_top):
+        key = cmd["technical_function"]
+        if key not in seen or cmd["relevance_score"] > seen[key]["relevance_score"]:
+            seen[key] = cmd
+
+    # If only one effective action, skip per-action loop
+    if len(actions) > 1:
+        for action in actions:
+            if not action or len(action) < 2:
+                continue
+            try:
+                for cmd in retrieve_relevant_commands(action, top_k=per_action):
+                    key = cmd["technical_function"]
+                    if key not in seen or cmd["relevance_score"] > seen[key]["relevance_score"]:
+                        seen[key] = cmd
+            except Exception as e:
+                logger.warning(f"Per-action RAG failed for {action!r}: {e}")
+
+    merged = sorted(seen.values(), key=lambda c: c["relevance_score"], reverse=True)
+    return merged
+
+
 def call_ollama(system_prompt: str, user_message: str, ollama_host: str) -> dict:
     """Call Ollama and parse the JSON object out of the response."""
     oclient = ollama.Client(host=ollama_host)
@@ -527,8 +668,8 @@ async def chat(request: ChatRequest):
             )
 
         logger.info(f"Retrieving relevant commands for: {request.message}")
-        relevant_commands = retrieve_relevant_commands(request.message, top_k=15)
-        logger.info(f"Retrieved {len(relevant_commands)} relevant commands")
+        relevant_commands = retrieve_relevant_commands_multi(request.message, per_action=8, whole_top=10)
+        logger.info(f"Retrieved {len(relevant_commands)} relevant commands (multi-action RAG)")
 
         top_score = relevant_commands[0]["relevance_score"] if relevant_commands else 0.0
         ambiguous = top_score < AMBIGUITY_THRESHOLD
@@ -556,56 +697,60 @@ async def chat(request: ChatRequest):
             user_text = parsed.get("user_text", "UNKNOWN_COMMAND")
             technical = parsed.get("technical", "UNKNOWN_COMMAND")
 
-            # Validate the single function is in the catalog (no hallucination)
+            # Case-insensitive validation with auto-correct to canonical catalog spelling
             bare = _bare_function(technical)
+            param_match = re.search(r"(\(.*\))\s*$", technical or "")
+            param_suffix = param_match.group(1) if param_match else ""
             catalog = get_all_commands()
-            catalog_funcs = set(catalog.values())
-            catalog_names = set(catalog.keys())
-            bare_user_text = _bare_function(user_text)
-            if (not bare or bare not in catalog_funcs) or (bare_user_text and bare_user_text not in catalog_names):
-                # Either function is fake OR command name doesn't match catalog exactly.
-                # Try to auto-correct: find the catalog entry whose function matches bare,
-                # and use its EXACT left-side name as user_text.
-                fixed = False
-                if bare and bare in catalog_funcs:
-                    for cmd_name, fn in catalog.items():
-                        if fn == bare:
-                            user_text = cmd_name + (user_text[len(bare_user_text):] if bare_user_text else "")
-                            fixed = True
-                            break
-                if not fixed:
-                    # Fall back to clarify with suggestions from RAG
-                    suggestions = [
-                        ClarifySuggestion(
-                            command=cmd["command_name"],
-                            function=cmd["technical_function"],
-                            why=f"Available command (RAG score {round(cmd['relevance_score'], 2)})",
-                        )
-                        for cmd in relevant_commands[:5]
-                    ]
-                    question = (
-                        f"I couldn't reliably map your request to a known command "
-                        f"(the model suggested \"{technical}\" which doesn't exist in the catalog). "
-                        "Could you pick from the suggestions below or rephrase?"
+            fn_lookup = {fn.lower(): (cmd_name, fn) for cmd_name, fn in catalog.items()}
+            name_lookup = {cmd_name.lower(): (cmd_name, fn) for cmd_name, fn in catalog.items()}
+
+            hit = fn_lookup.get(bare.lower()) if bare else None
+            if not hit:
+                # try matching by user_text (catalog command name)
+                ut_bare = _bare_function(user_text)
+                hit = name_lookup.get(ut_bare.lower()) if ut_bare else None
+
+            if hit:
+                canon_name, canon_fn = hit
+                # Preserve user_text's param suffix if present (e.g., "open Table(ABC)")
+                ut_param_match = re.search(r"(\(.*\))\s*$", user_text or "")
+                ut_param = ut_param_match.group(1) if ut_param_match else ""
+                user_text = canon_name + ut_param
+                technical = canon_fn + param_suffix
+            else:
+                # Fall back to clarify with suggestions from RAG
+                suggestions = [
+                    ClarifySuggestion(
+                        command=cmd["command_name"],
+                        function=cmd["technical_function"],
+                        why=f"Available command (RAG score {round(cmd['relevance_score'], 2)})",
                     )
-                    await clear_pending_plan(session_id)
-                    assistant_msg = ChatMessage(
-                        session_id=session_id,
-                        role="assistant",
-                        content=f"[CLARIFY] {question}",
-                        formula=None,
-                    )
-                    doc = assistant_msg.model_dump()
-                    doc['timestamp'] = doc['timestamp'].isoformat()
-                    await db.chat_messages.insert_one(doc)
-                    return ChatResponse(
-                        mode="clarify",
-                        session_id=session_id,
-                        message_id=assistant_msg.id,
-                        question=question,
-                        suggestions=suggestions,
-                        retrieved_commands=retrieved_for_display,
-                    )
+                    for cmd in relevant_commands[:5]
+                ]
+                question = (
+                    f"I couldn't reliably map your request to a known command "
+                    f"(the model suggested \"{technical}\" which doesn't exist in the catalog). "
+                    "Could you pick from the suggestions below or rephrase?"
+                )
+                await clear_pending_plan(session_id)
+                assistant_msg = ChatMessage(
+                    session_id=session_id,
+                    role="assistant",
+                    content=f"[CLARIFY] {question}",
+                    formula=None,
+                )
+                doc = assistant_msg.model_dump()
+                doc['timestamp'] = doc['timestamp'].isoformat()
+                await db.chat_messages.insert_one(doc)
+                return ChatResponse(
+                    mode="clarify",
+                    session_id=session_id,
+                    message_id=assistant_msg.id,
+                    question=question,
+                    suggestions=suggestions,
+                    retrieved_commands=retrieved_for_display,
+                )
 
             assistant_msg = ChatMessage(
                 session_id=session_id,
